@@ -110,3 +110,70 @@ from fastapi.responses import FileResponse
 @app.get("/dashboard", include_in_schema=False)
 def dashboard():
     return FileResponse(Path(__file__).resolve().parent / "apps" / "web" / "index.html")
+
+# Local-network pairing: short-lived, single-use invite with explicit host approval.
+# Invites do not contain the coordinator's administrative GRID_TOKEN.
+import io
+import qrcode
+from fastapi.responses import StreamingResponse
+from fastapi import Request
+
+PAIR_TTL_SECONDS = 180
+
+@app.post("/pair/invites", dependencies=[Depends(auth)])
+def create_invite():
+    code = secrets.token_urlsafe(24)
+    with lock:
+        pairings[code] = {"expires": time.time() + PAIR_TTL_SECONDS,
+                          "status": "waiting", "device_name": None}
+    public_url = os.environ.get("GRID_PUBLIC_URL", "http://127.0.0.1:8765").rstrip("/")
+    return {"code": code, "join_url": public_url + "/join?code=" + code,
+            "expires_in_seconds": PAIR_TTL_SECONDS}
+
+@app.get("/pair/invites/{code}/qr", dependencies=[Depends(auth)])
+def invite_qr(code: str):
+    with lock:
+        invite = pairings.get(code)
+        if not invite or invite["expires"] < time.time():
+            raise HTTPException(404, "Invite expired")
+    public_url = os.environ.get("GRID_PUBLIC_URL", "http://127.0.0.1:8765").rstrip("/")
+    img = qrcode.make(public_url + "/join?code=" + code)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+    return StreamingResponse(buf, media_type="image/png", headers={"Cache-Control": "no-store"})
+
+class JoinRequest(BaseModel):
+    code: str
+    device_name: str = Field(min_length=1, max_length=80)
+
+@app.post("/pair/request")
+def request_pairing(payload: JoinRequest):
+    with lock:
+        invite = pairings.get(payload.code)
+        if not invite or invite["expires"] < time.time() or invite["status"] != "waiting":
+            raise HTTPException(404, "Invalid or expired invite")
+        invite.update(status="pending", device_name=payload.device_name)
+    return {"status": "pending", "message": "Waiting for host approval"}
+
+@app.get("/pair/invites/{code}", dependencies=[Depends(auth)])
+def pairing_status(code: str):
+    with lock:
+        invite = pairings.get(code)
+        if not invite:
+            raise HTTPException(404, "Unknown invite")
+        return {"status": "expired" if invite["expires"] < time.time() else invite["status"],
+                "device_name": invite["device_name"]}
+
+@app.post("/pair/invites/{code}/approve", dependencies=[Depends(auth)])
+def approve_pairing(code: str):
+    with lock:
+        invite = pairings.get(code)
+        if not invite or invite["expires"] < time.time() or invite["status"] != "pending":
+            raise HTTPException(409, "No pending request")
+        invite["status"] = "approved"
+    return {"status": "approved"}
+
+@app.get("/join", include_in_schema=False)
+def join_page():
+    return FileResponse(Path(__file__).resolve().parent / "apps" / "web" / "join.html")
