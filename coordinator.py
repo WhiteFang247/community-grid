@@ -102,3 +102,11 @@ def submit_result(job_id: str, payload: Result):
             raise HTTPException(409, "Job lease expired")
         job.update(status="completed", result=payload.result, completed_at=time.time())
     return {"accepted": True}
+
+# Serve the original dashboard from the coordinator origin to avoid browser CORS issues.
+from pathlib import Path
+from fastapi.responses import FileResponse
+
+@app.get("/dashboard", include_in_schema=False)
+def dashboard():
+    return FileResponse(Path(__file__).resolve().parent / "apps" / "web" / "index.html")
