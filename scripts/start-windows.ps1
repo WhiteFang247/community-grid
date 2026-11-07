@@ -13,7 +13,9 @@ if (-not $env:GRID_TOKEN) {
 }
 $token = $env:GRID_TOKEN
 $root = (Get-Location).Path
-$coordinator = Start-Process -FilePath $python -ArgumentList @("-m","uvicorn","coordinator:app","--host","127.0.0.1","--port","8765") -WorkingDirectory $root -PassThru
+$bindHost = "127.0.0.1"
+if ($env:GRID_PUBLIC_URL) { $bindHost = "0.0.0.0" }
+$coordinator = Start-Process -FilePath $python -ArgumentList @("-m","uvicorn","coordinator:app","--host",$bindHost,"--port","8765") -WorkingDirectory $root -PassThru
 $env:GRID_COORDINATOR = "http://127.0.0.1:8765"
 $worker = Start-Process -FilePath $python -ArgumentList @("worker.py") -WorkingDirectory $root -PassThru
 Write-Host ""
