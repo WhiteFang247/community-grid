@@ -218,3 +218,29 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Community Grid: multi-platform and secrets
+.dart_tool/
+.pub-cache/
+.flutter-plugins-dependencies
+node_modules/
+.next/
+target/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+.env
+.env.*
+!.env.example
+*.gguf
+*.safetensors
+*.onnx
+*.pt
+*.pth
+models/
+datasets/
+android/key.properties
+google-services.json
+GoogleService-Info.plist
+*.keystore
+*.pem
