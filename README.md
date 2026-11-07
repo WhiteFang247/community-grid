@@ -58,3 +58,21 @@ Explicit device enrollment, mutual authentication, encrypted control traffic, us
 ## License
 
 Community Grid is licensed under [Apache License 2.0](LICENSE). Third-party components retain their respective licenses.
+
+## Run the reconstructed v0.2 prototype
+
+Python 3.11+ recommended:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate   # Windows PowerShell: .venv\\Scripts\\Activate.ps1
+pip install -r requirements.txt
+export GRID_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+uvicorn coordinator:app --host 127.0.0.1 --port 8765
+```
+
+Start `python worker.py` in another terminal with the **same** `GRID_TOKEN`. Open `http://127.0.0.1:8765/dashboard`, enter the token, and connect. The worker contributes only when `GRID_CONTRIBUTE=true` (default); set it to `false` to report status without taking jobs. Run `pytest -q` to exercise the coordinator's authenticated task round-trip.
+
+For Windows PowerShell, set `$env:GRID_TOKEN = "your-long-random-token"` in both terminals; use `$env:GRID_COORDINATOR = "https://your-trusted-tailscale-serve-address"` for a remote worker. **Do not expose the coordinator on a public network.** This is an authenticated prototype, not a production-hardened multi-user system.
+
+See [recovered benchmarks](docs/BENCHMARKS.md). The original PrivateLM mobile code, QR pairing, and distributed LLM adapter have **not** yet been imported.
