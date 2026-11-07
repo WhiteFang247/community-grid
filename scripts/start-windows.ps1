@@ -13,8 +13,9 @@ if (-not $env:GRID_TOKEN) {
 }
 $token = $env:GRID_TOKEN
 $root = (Get-Location).Path
-$coordinator = Start-Process -FilePath $python -ArgumentList @("-m","uvicorn","coordinator:app","--host","127.0.0.1","--port","8765") -WorkingDirectory $root -PassThru -Environment @{GRID_TOKEN=$token}
-$worker = Start-Process -FilePath $python -ArgumentList @("worker.py") -WorkingDirectory $root -PassThru -Environment @{GRID_TOKEN=$token;GRID_COORDINATOR="http://127.0.0.1:8765"}
+$coordinator = Start-Process -FilePath $python -ArgumentList @("-m","uvicorn","coordinator:app","--host","127.0.0.1","--port","8765") -WorkingDirectory $root -PassThru
+$env:GRID_COORDINATOR = "http://127.0.0.1:8765"
+$worker = Start-Process -FilePath $python -ArgumentList @("worker.py") -WorkingDirectory $root -PassThru
 Write-Host ""
 Write-Host "Community Grid running!" -ForegroundColor Green
 Write-Host "Dashboard: http://127.0.0.1:8765/dashboard"
