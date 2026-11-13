@@ -1,0 +1,25 @@
+[Unit]
+Description=Community Grid OS local dashboard (preview)
+After=network.target
+
+[Service]
+Type=simple
+User=community-grid
+Group=community-grid
+Environment=PYTHONPATH=/opt/community-grid/runtime
+Environment=COMMUNITY_GRID_PORT=8765
+Environment=COMMUNITY_GRID_STATE=/var/lib/community-grid/jobs.sqlite3
+StateDirectory=community-grid
+ExecStart=/usr/bin/python3 -m community_grid.server
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target
