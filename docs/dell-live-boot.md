@@ -28,3 +28,18 @@ No installed OS image, no chat assistant, no model installer, no authenticated c
 
 ## Troubleshooting
 If the ISO build fails, retain the full GitHub Actions log and avoid writing an unverified image. If the Dell fails to boot, restore the original boot order rather than repartitioning any internal drive.
+
+## Collecting a first-boot diagnostic report
+Open a terminal in the live desktop and run:
+
+```bash
+PYTHONPATH=/opt/community-grid/runtime python3 -m community_grid.diagnostics > ~/community-grid-diagnostics.json
+```
+
+The report contains hardware, network interface, route and disk metadata, not file contents or credentials. **Review it before sharing**: MAC addresses, local IP addresses, hostnames and disk identifiers may be included. It is safe to copy to the Lenovo after review.
+
+## Codex supervisor over direct Ethernet
+- Plug a USB-A 3.0 Gigabit Ethernet adapter into the Lenovo, and connect its RJ45 port directly to the Dell's Ethernet port with a standard Cat5e/Cat6 cable.
+- Assign static IP addresses on that Ethernet link only (example: Lenovo `192.168.50.1/24`, Dell `192.168.50.2/24`). Leave Lenovo Wi-Fi for internet access.
+- **SSH access is not automatically enabled or authorized in this preview.** For unattended Codex access, a later image must include an explicitly provisioned SSH server and a trusted Lenovo public key, with no default password.
+- Never expose the dashboard or SSH to a public interface without authentication and firewall policy. Do not automatically grant Codex root access.
