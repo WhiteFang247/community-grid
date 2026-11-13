@@ -18,6 +18,16 @@ def _mem_total_bytes():
     return None
 
 
+def _mem_available_bytes():
+    try:
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            if line.startswith("MemAvailable:"):
+                return int(line.split()[1]) * 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    return None
+
+
 def _gpu_devices():
     devices = []
     command = shutil.which("vulkaninfo")
@@ -45,6 +55,7 @@ def discover():
         "cpu": platform.processor() or platform.machine(),
         "logical_cpus": os.cpu_count(),
         "memory_total_bytes": _mem_total_bytes(),
+        "memory_available_bytes": _mem_available_bytes(),
         "accelerators": _gpu_devices(),
     }
 
