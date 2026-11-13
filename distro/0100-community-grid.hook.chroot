@@ -1,0 +1,6 @@
+#!/bin/sh
+set -eu
+if ! getent passwd community-grid >/dev/null; then
+  useradd --system --home-dir /var/lib/community-grid --shell /usr/sbin/nologin community-grid
+fi
+systemctl enable community-grid.service
