@@ -30,5 +30,8 @@ class NodeRegistry:
 
     def list_nodes(self):
         with self._lock:
-            ids = sorted(self._nodes)
-        return [self.get(node_id) for node_id in ids]
+            return [
+                {"node_id": node_id, "capabilities": dict(self._nodes[node_id]["capabilities"]),
+                 "last_seen": self._nodes[node_id]["last_seen"]}
+                for node_id in sorted(self._nodes)
+            ]
