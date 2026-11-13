@@ -20,7 +20,10 @@ def recommend(capabilities: dict, reserve_gib: float = 3.0) -> dict:
     total = capabilities.get("memory_total_bytes")
     if not isinstance(total, int) or total <= 0:
         return {"selected": None, "reason": "RAM not detected; manual selection required", "candidates": []}
-    available = max(0.0, total / (1024 ** 3) - reserve_gib)
+    current = capabilities.get("memory_available_bytes")
+    if not isinstance(current, int) or current <= 0:
+        current = total
+    available = max(0.0, min(total, current) / (1024 ** 3) - reserve_gib)
     eligible = [model for model in CATALOG if model.minimum_ram_gib <= available]
     selected = eligible[-1] if eligible else None
     return {
