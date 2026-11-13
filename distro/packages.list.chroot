@@ -1,0 +1,14 @@
+# Lightweight desktop, browser, Python runtime and network diagnostics
+task-xfce-desktop
+lightdm
+firefox-esr
+python3
+ca-certificates
+curl
+iproute2
+pciutils
+usbutils
+mesa-utils
+vulkan-tools
+network-manager
+sudo
