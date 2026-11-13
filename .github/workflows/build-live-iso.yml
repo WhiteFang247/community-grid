@@ -1,6 +1,13 @@
 name: Build Community Grid OS live ISO (experimental)
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - feature/community-grid-os
+    paths:
+      - 'distro/**'
+      - 'runtime/**'
+      - '.github/workflows/build-live-iso.yml'
 permissions:
   contents: read
 jobs:
