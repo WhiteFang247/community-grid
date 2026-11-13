@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Community Grid OS
+Comment=Open the local AI runtime dashboard
+Exec=firefox-esr http://127.0.0.1:8765
+Icon=utilities-system-monitor
+Terminal=false
+Categories=System;Utility;
