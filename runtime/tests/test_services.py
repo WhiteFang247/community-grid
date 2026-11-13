@@ -22,6 +22,19 @@ class ServiceTests(unittest.TestCase):
             self.assertEqual(queue.run(job_id, handle_job)["status"], "done")
             self.assertEqual(JobQueue(path).get(job_id)["result"]["mode"], "standalone")
 
+    def test_claimed_job_not_reexecuted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            queue = JobQueue(str(Path(tmp) / "jobs.db"))
+            job_id = queue.submit("system.health")
+            calls = []
+            def handler(kind, payload):
+                calls.append(kind)
+                with self.assertRaises(ValueError):
+                    queue.run(job_id, lambda *_: None)
+                return {"ok": True}
+            queue.run(job_id, handler)
+            self.assertEqual(len(calls), 1)
+
     def test_queue_rejects_shell(self):
         with tempfile.TemporaryDirectory() as tmp:
             with self.assertRaises(ValueError):
