@@ -39,7 +39,9 @@ class JobQueue:
             kind, payload, status = row
             if status != "queued":
                 raise ValueError("job is not queued")
-            db.execute("UPDATE jobs SET status='running' WHERE id=?", (job_id,))
+            claimed = db.execute("UPDATE jobs SET status='running' WHERE id=? AND status='queued'", (job_id,))
+            if claimed.rowcount != 1:
+                raise ValueError("job was already claimed")
         try:
             result = handler(kind, json.loads(payload))
             status = "done"
