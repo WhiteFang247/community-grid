@@ -6,10 +6,13 @@ from .models import recommend
 
 def main():
     parser = argparse.ArgumentParser(description="Community Grid OS")
-    parser.add_argument("command", choices=["hardware", "recommend", "health"])
+    parser.add_argument("command", choices=["hardware", "recommend", "health", "diagnostics"])
     args = parser.parse_args()
     if args.command == "hardware":
         data = discover()
+    elif args.command == "diagnostics":
+        from .diagnostics import collect
+        data = collect()
     elif args.command == "recommend":
         data = recommend(discover())
     else:
