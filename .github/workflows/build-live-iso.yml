@@ -39,27 +39,7 @@ jobs:
             unsquashfs -ll "$filesystem" > "$scratch/paths"
             # A bare .ssh directory contains no credentials. Reject entries below it
             # and any .ssh symlink or file, along with standalone key paths.
-            if grep -E '(/\.ssh/|/authorized_keys2?( -> .*)?$|/ssh_host_[^/[:space:]]+_key([.][^/[:space:]]+)?( -> .*)?$|/id_(rsa|ed25519|ecdsa|dsa)([.]pub)?( -> .*)?$)|^[^d].*/\.ssh( -> .*)?
-              echo 'Unexpected SSH credential path in live filesystem' >&2
-              exit 1
-            fi
-            grep -E '/etc/systemd/system/ssh[.]service -> /dev/null$' "$scratch/paths"
-            grep -E '/etc/systemd/system/ssh[.]socket -> /dev/null$' "$scratch/paths"
-            grep -E '/usr/local/sbin/start-supervisor-ssh$' "$scratch/paths"
-          done
-          test "$found" -eq 1
-      - name: SHA256
-        run: |
-          cd .build/community-grid-live
-          sha256sum live-image-amd64.hybrid.iso > SHA256SUMS
-      - uses: actions/upload-artifact@v4
-        with:
-          name: community-grid-os-amd64-live
-          path: |
-            .build/community-grid-live/live-image-amd64.hybrid.iso
-            .build/community-grid-live/SHA256SUMS
-          retention-days: 7
- "$scratch/paths"; then
+            if grep -E '(/\.ssh/|/authorized_keys2?( -> .*)?$|/ssh_host_[^/[:space:]]+_key([.][^/[:space:]]+)?( -> .*)?$|/id_(rsa|ed25519|ecdsa|dsa)([.]pub)?( -> .*)?$)|^[^d].*/\.ssh( -> .*)?$' "$scratch/paths"; then
               echo 'Unexpected SSH credential path in live filesystem' >&2
               exit 1
             fi
