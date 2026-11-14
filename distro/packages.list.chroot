@@ -12,3 +12,4 @@ mesa-utils
 vulkan-tools
 network-manager
 sudo
+openssh-server

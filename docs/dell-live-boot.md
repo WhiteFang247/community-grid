@@ -41,5 +41,6 @@ The report contains hardware, network interface, route and disk metadata, not fi
 ## Codex supervisor over direct Ethernet
 - Plug a USB-A 3.0 Gigabit Ethernet adapter into the Lenovo, and connect its RJ45 port directly to the Dell's Ethernet port with a standard Cat5e/Cat6 cable.
 - Assign static IP addresses on that Ethernet link only (example: Lenovo `192.168.50.1/24`, Dell `192.168.50.2/24`). Leave Lenovo Wi-Fi for internet access.
-- **SSH access is not automatically enabled or authorized in this preview.** For unattended Codex access, a later image must include an explicitly provisioned SSH server and a trusted Lenovo public key, with no default password.
+- On builds containing the supervisor SSH helper, SSH starts only when the Dell console operator runs `sudo /usr/local/sbin/start-supervisor-ssh /path/to/lenovo-public-key.pub`. Use the explicitly approved ED25519 public key after configuring the direct Ethernet address. The helper uses a dedicated non-root account, permits public-key authentication only from `192.168.50.1`, and listens on `192.168.50.2:22`.
+- Copy the generated `/run/community-grid-ssh/host_ed25519.pub` to the Lenovo and pin it after comparing its fingerprint with the one displayed at the Dell console. A new live boot generates a fresh key when the helper runs. Stop the session with `sudo systemctl stop community-grid-supervisor-ssh` or shut down the live system.
 - Never expose the dashboard or SSH to a public interface without authentication and firewall policy. Do not automatically grant Codex root access.

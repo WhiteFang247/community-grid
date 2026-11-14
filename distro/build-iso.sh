@@ -18,6 +18,7 @@ cp "$ROOT/distro/packages.list.chroot" config/package-lists/community-grid.list.
 cp -a "$ROOT/runtime/community_grid" config/includes.chroot/opt/community-grid/runtime/
 cp "$ROOT/distro/community-grid.service" config/includes.chroot/etc/systemd/system/community-grid.service
 cp "$ROOT/distro/community-grid.desktop" config/includes.chroot/usr/share/applications/community-grid.desktop
+install -Dm755 "$ROOT/distro/start-supervisor-ssh.sh" config/includes.chroot/usr/local/sbin/start-supervisor-ssh
 cp "$ROOT/distro/0100-community-grid.hook.chroot" config/hooks/live/0100-community-grid.hook.chroot
 chmod +x config/hooks/live/0100-community-grid.hook.chroot
 lb build

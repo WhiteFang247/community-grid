@@ -1,5 +1,10 @@
 #!/bin/sh
 set -eu
+# Keep the packaged SSH entry points disabled in the live image. The
+# supervisor starts a separate instance explicitly from the Dell console.
+systemctl mask ssh.service ssh.socket
+# The package can generate host keys during installation. Never ship them.
+rm -f /etc/ssh/ssh_host_*_key /etc/ssh/ssh_host_*_key.pub
 if ! getent passwd community-grid >/dev/null; then
   useradd --system --home-dir /var/lib/community-grid --shell /usr/sbin/nologin community-grid
 fi
