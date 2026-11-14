@@ -1,0 +1,13 @@
+[connection]
+id=Community Grid wired DHCP
+uuid=6f257d96-f2a6-4f95-b815-a11556ac831b
+type=ethernet
+autoconnect=true
+
+[ethernet]
+
+[ipv4]
+method=auto
+
+[ipv6]
+method=link-local

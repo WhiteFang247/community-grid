@@ -2,15 +2,21 @@
 # Run in the Dell live session after confirming the Ethernet link and key.
 set -eu
 
-if [ "$#" -ne 1 ] || [ "$(id -u)" -ne 0 ]; then
-    echo "Usage: sudo $0 /path/to/lenovo-public-key.pub" >&2
+if [ "$#" -ne 4 ] || [ "$(id -u)" -ne 0 ]; then
+    echo "Usage: sudo $0 INTERFACE DELL_IPV4 LENOVO_IPV4 /path/to/lenovo-public-key.pub" >&2
     exit 2
 fi
 
-ip -o -4 address show | awk '$4 == "192.168.50.2/24" { found++ } END { exit (found != 1) }' || {
-    echo 'Assign 192.168.50.2/24 to the confirmed Dell Ethernet interface first.' >&2
-    exit 1
-}
+interface=$1
+dell=$2
+lenovo=$3
+public_key=$4
+python3 /opt/community-grid/runtime/community_grid/live_network.py "$interface" "$dell" "$lenovo"
+fingerprint=$(ssh-keygen -lf "$public_key")
+case "$fingerprint" in
+    *' (ED25519)') ;;
+    *) echo 'Expected a valid Lenovo ED25519 public key.' >&2; exit 1 ;;
+esac
 
 account=grid-supervisor
 state=/run/community-grid-ssh
@@ -24,10 +30,10 @@ if getent passwd "$account" >/dev/null; then
 fi
 
 key=$(awk 'NR == 1 && $1 == "ssh-ed25519" && $2 ~ /^[A-Za-z0-9+\/=]+$/ {print $1, $2}
-    END {if (NR != 1) exit 1}' "$1")
+    END {if (NR != 1) exit 1}' "$public_key")
 test -n "$key"
 install -d -m 0755 -o root -g root "$state" /run/sshd
-printf 'restrict,from="192.168.50.1" %s\n' "$key" > "$state/authorized_keys"
+printf 'restrict,from="%s" %s\n' "$lenovo" "$key" > "$state/authorized_keys"
 chmod 0644 "$state/authorized_keys"
 printf '%s\n' "$key" > "$state/lenovo.pub"
 ssh-keygen -lf "$state/lenovo.pub"
@@ -36,12 +42,12 @@ useradd --system --no-create-home --home-dir "$state" --shell /bin/sh "$account"
 ssh-keygen -q -t ed25519 -N '' -f "$state/host_ed25519"
 cat > "$state/sshd_config" <<EOF
 AddressFamily inet
-ListenAddress 192.168.50.2
+ListenAddress $dell
 Port 22
 HostKey $state/host_ed25519
 PidFile $state/sshd.pid
 AuthorizedKeysFile $state/authorized_keys
-AllowUsers $account@192.168.50.1
+AllowUsers $account@$lenovo
 AuthenticationMethods publickey
 PubkeyAuthentication yes
 PasswordAuthentication no

@@ -16,6 +16,8 @@ mkdir -p config/package-lists config/includes.chroot/opt/community-grid/runtime 
   config/includes.chroot/usr/share/applications config/hooks/live
 cp "$ROOT/distro/packages.list.chroot" config/package-lists/community-grid.list.chroot
 cp -a "$ROOT/runtime/community_grid" config/includes.chroot/opt/community-grid/runtime/
+install -Dm600 "$ROOT/distro/community-grid-wired.nmconnection" \
+  config/includes.chroot/etc/NetworkManager/system-connections/community-grid-wired.nmconnection
 cp "$ROOT/distro/community-grid.service" config/includes.chroot/etc/systemd/system/community-grid.service
 cp "$ROOT/distro/community-grid.desktop" config/includes.chroot/usr/share/applications/community-grid.desktop
 install -Dm755 "$ROOT/distro/start-supervisor-ssh.sh" config/includes.chroot/usr/local/sbin/start-supervisor-ssh
