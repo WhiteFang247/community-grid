@@ -31,14 +31,14 @@ TERMINAL = {"completed", "failed", "cancelled", "timed-out", "blocked"}
 def validate(graph):
     duration = graph.get("timeout", 120)
     if type(duration) is not int or not 1 <= duration <= 300:
-        raise ValueError("Graph timeout must be 1–300 seconds")
+        raise ValueError("Graph timeout must be 1Ã¢â‚¬â€œ300 seconds")
     if type(graph["version"]) is not int or graph["version"] != 1 or not isinstance(graph["owner"], str) or not graph["owner"].strip():
         raise ValueError("Invalid version or owner")
     if not isinstance(graph["id"], str) or not graph["id"]:
         raise ValueError("Invalid graph identity")
     units = graph["units"]
     if not isinstance(units, dict) or not 1 <= len(units) <= 32:
-        raise ValueError("Expected 1–32 units")
+        raise ValueError("Expected 1Ã¢â‚¬â€œ32 units")
     visited, active = set(), set()
 
     def visit(name):
@@ -81,17 +81,62 @@ def validate(graph):
 
 
 class GraphRuntime:
-    def __init__(self, path, nodes, clock=time.time):
-        self.path, self.nodes, self.clock = path, nodes, clock
+    def __init__(self, path, nodes, clock=None, *, coordinator_boot_id=None,
+                 lease_seconds=15, worker_memory_mib=128):
+        if coordinator_boot_id is not None and (not isinstance(coordinator_boot_id, str)
+                                                or not coordinator_boot_id):
+            raise ValueError("Invalid coordinator boot ID")
+        if type(lease_seconds) is not int or not 1 <= lease_seconds <= 300:
+            raise ValueError("Invalid lease duration")
+        if type(worker_memory_mib) is not int or worker_memory_mib < 1:
+            raise ValueError("Invalid worker memory budget")
+        self.path, self.nodes = path, nodes
+        self.boot_id = coordinator_boot_id
+        self.clock = clock or (time.monotonic if self.boot_id else time.time)
+        self.lease_seconds = lease_seconds
+        self.worker_memory_mib = worker_memory_mib
         with closing(sqlite3.connect(path)) as db, db:
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS graphs(id TEXT PRIMARY KEY, state BLOB NOT NULL);
                 CREATE TABLE IF NOT EXISTS artifacts(hash TEXT PRIMARY KEY, data BLOB NOT NULL);
             """)
+            if self.boot_id:
+                db.executescript("""
+                    CREATE TABLE IF NOT EXISTS scheduler_epoch(
+                        singleton INTEGER PRIMARY KEY CHECK(singleton=1), boot_id TEXT NOT NULL);
+                    CREATE TABLE IF NOT EXISTS lease_quarantine(
+                        attempt TEXT PRIMARY KEY, node TEXT NOT NULL, lease BLOB NOT NULL);
+                """)
+                db.execute("BEGIN IMMEDIATE")
+                epoch = db.execute("SELECT boot_id FROM scheduler_epoch").fetchone()
+                if epoch != (self.boot_id,):
+                    for (raw,) in db.execute("SELECT state FROM graphs").fetchall():
+                        state = json.loads(raw)
+                        if not state.get("coordinator_boot_id"):
+                            continue
+                        for record in state["units"].values():
+                            if record["status"] == "assigned":
+                                self._quarantine(db, record["lease"])
+                                record["history"][-1]["outcome"] = "coordinator-restarted"
+                            if record["status"] not in TERMINAL:
+                                record["status"] = "timed-out"
+                        self._save(db, state)
+                    db.execute("INSERT OR REPLACE INTO scheduler_epoch VALUES (1, ?)",
+                               (self.boot_id,))
+
+    def _assert_epoch(self, db):
+        if self.boot_id and db.execute("SELECT boot_id FROM scheduler_epoch").fetchone() != (self.boot_id,):
+            raise RuntimeError("Coordinator boot identity is fenced")
+
+    def _quarantine(self, db, lease):
+        db.execute("INSERT OR IGNORE INTO lease_quarantine VALUES (?, ?, ?)",
+                   (lease["attempt"], lease["node"], encode(lease)))
 
     def _load(self, db, graph_id, owner):
+        self._assert_epoch(db)
         row = db.execute("SELECT state FROM graphs WHERE id=?", (graph_id,)).fetchone()
-        if row is None or (state := json.loads(row[0]))["graph"]["owner"] != owner:
+        if (row is None or (state := json.loads(row[0]))["graph"]["owner"] != owner
+                or bool(state.get("coordinator_boot_id")) != bool(self.boot_id)):
             raise KeyError(graph_id)
         return state
 
@@ -103,14 +148,18 @@ class GraphRuntime:
             raise ValueError("Graph exceeds 64 KiB")
         with closing(sqlite3.connect(self.path)) as db, db:
             db.execute("BEGIN IMMEDIATE")
+            self._assert_epoch(db)
             row = db.execute("SELECT state FROM graphs WHERE id=?", (graph["id"],)).fetchone()
             if row:
-                if json.loads(row[0])["graph"] != graph:
+                previous = json.loads(row[0])
+                if previous["graph"] != graph or bool(previous.get("coordinator_boot_id")) != bool(self.boot_id):
                     raise ValueError("Graph ID conflict")
             else:
                 state = {"graph": graph, "deadline": self.clock() + graph.get("timeout", 120),
                          "units": {name: {"status": "waiting", "history": []}
                                                    for name in graph["units"]}}
+                if self.boot_id:
+                    state["coordinator_boot_id"] = self.boot_id
                 db.execute("INSERT INTO graphs VALUES (?,?)", (graph["id"], encode(state)))
         return graph["id"]
 
@@ -145,7 +194,7 @@ class GraphRuntime:
                         record["status"] = "cancelled"
             self._save(db, state)
 
-    def publish(self, graph_id, owner, unit, attempt, data, checksum):
+    def publish(self, graph_id, owner, unit, attempt, data, checksum, *, lease=None, worker_id=None):
         with closing(sqlite3.connect(self.path)) as db, db:
             db.execute("BEGIN IMMEDIATE")
             state = self._load(db, graph_id, owner)
@@ -153,12 +202,24 @@ class GraphRuntime:
             if (record["status"] != "assigned" or record["attempt"] != attempt
                     or record.get("cancel_requested") or self.clock() >= record["deadline"]):
                 return False
+            if self.boot_id:
+                expected_lease = record["lease"]
+                assigned_node = self.nodes.get(expected_lease["node"])
+                if (state["coordinator_boot_id"] != self.boot_id
+                        or worker_id != expected_lease["node"]
+                        or encode(lease) != encode(expected_lease)
+                        or getattr(assigned_node, "boot_id", None) != expected_lease["worker_boot_id"]
+                        or self.clock() >= state["deadline"]
+                        or digest(encode(record["input"])) != expected_lease["input_digest"]):
+                    return False
             expected = OPERATIONS[state["graph"]["units"][unit]["op"]][1]
             if len(data) > 65536 or digest(data) != checksum or type(json.loads(data)) is not expected:
                 raise ValueError("Invalid result manifest")
             operation = state["graph"]["units"][unit]["op"]
             if data != encode(OPERATIONS[operation][2](record["input"])):
                 raise ValueError("Result differs from trusted local execution")
+            if self.boot_id and self.clock() >= min(state["deadline"], record["deadline"]):
+                return False
             db.execute("INSERT OR IGNORE INTO artifacts VALUES (?,?)", (checksum, data))
             self._artifact(db, checksum)
             record.update(status="completed", result={"attempt": attempt, "sha256": checksum,
@@ -169,13 +230,18 @@ class GraphRuntime:
 
     def tick(self, graph_id, owner):
         state = self.status(graph_id, owner)
+        if self.boot_id:
+            self._reconcile_quarantine()
         for name, record in state["units"].items():
             if record["status"] == "assigned" or record.get("cleanup_pending"):
-                self._reconcile(graph_id, owner, name, record)
+                if self.boot_id:
+                    self._reconcile_lease(graph_id, owner, name, record)
+                else:
+                    self._reconcile(graph_id, owner, name, record)
         state = self.status(graph_id, owner)
         eligible = {
             name: [node for node in sorted(set(unit["nodes"]))
-                   if node in self.nodes and self.nodes[node].eligible(unit)]
+                   if node in self.nodes and self._eligible(self.nodes[node], unit)]
             for name, unit in state["graph"]["units"].items()
             if state["units"][name]["status"] == "waiting"
             and self.clock() < state.get("deadline", float("inf"))
@@ -187,6 +253,8 @@ class GraphRuntime:
             occupied = {record["node"] for row in db.execute("SELECT state FROM graphs")
                         for record in json.loads(row[0])["units"].values()
                         if record["status"] == "assigned" or record.get("cleanup_pending")}
+            if self.boot_id:
+                occupied.update(node for (node,) in db.execute("SELECT node FROM lease_quarantine"))
             for name, unit in sorted(state["graph"]["units"].items()):
                 record = state["units"][name]
                 if record["status"] != "waiting":
@@ -206,7 +274,12 @@ class GraphRuntime:
                     continue
                 node = candidates[0]
                 attempt = str(uuid.uuid4())
-                deadline = min(self.clock() + unit["timeout"], state.get("deadline", float("inf")))
+                budget = min(unit["timeout"], self.lease_seconds) if self.boot_id else unit["timeout"]
+                assigned_at = self.clock()
+                deadline = min(assigned_at + budget, state.get("deadline", float("inf")))
+                if self.boot_id and deadline <= assigned_at:
+                    record["status"] = "timed-out"
+                    continue
                 value = (self._artifact(db, state["units"][unit["from"]]["result"]["sha256"])
                          if "from" in unit else unit["value"])
                 for field in ("acknowledged", "acknowledged_at", "started_at", "finished_at", "cleanup_pending"):
@@ -215,8 +288,105 @@ class GraphRuntime:
                               reason="First eligible node by ID")
                 record["history"].append({"attempt": attempt, "node": node, "deadline": deadline,
                                           "assigned_at": self.clock()})
+                if self.boot_id:
+                    lease = dict(graph=graph_id, task=name, node=node,
+                                 worker_boot_id=self.nodes[node].boot_id,
+                                 coordinator_boot_id=self.boot_id,
+                                 generation=len(record["history"]), attempt=attempt,
+                                 deadline=deadline, budget_seconds=deadline - assigned_at,
+                                 cpu=unit["cpu"], ram_mib=unit["ram_mib"],
+                                 operation=unit["op"], input_digest=digest(encode(value)))
+                    lease["request_digest"] = digest(encode(lease))
+                    record["lease"] = record["history"][-1]["lease"] = lease
                 occupied.add(node)
             self._save(db, state)
+
+    def _eligible(self, node, unit):
+        if self.boot_id and (not getattr(node, "boot_id", None) or unit["cpu"] != 1
+                             or unit["ram_mib"] > self.worker_memory_mib):
+            return False
+        return node.eligible(unit)
+
+    def _finish_lease(self, graph_id, owner, name, lease, outcome, *, retry=False, quarantine=False):
+        with closing(sqlite3.connect(self.path)) as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            state = self._load(db, graph_id, owner)
+            record = state["units"][name]
+            if record["status"] != "assigned" or record["lease"] != lease:
+                return
+            if record.get("cancel_requested"):
+                outcome, retry = "cancelled", False
+            if quarantine:
+                self._quarantine(db, lease)
+            record["history"][-1]["outcome"] = outcome
+            record["status"] = ("waiting" if retry and self.clock() < state["deadline"]
+                                and lease["generation"] < state["graph"]["units"][name]["attempts"]
+                                else outcome)
+            self._save(db, state)
+
+    @staticmethod
+    def _lease_reply(node, lease):
+        reply = node.lease_status(lease)
+        if (not isinstance(reply, dict) or encode(reply.get("lease")) != encode(lease)
+                or reply.get("status") not in
+                {"missing", "queued", "running", "completed", "failed", "cancelled", "timed-out"}):
+            raise ValueError("Invalid lease response")
+        return reply
+
+    def _reconcile_lease(self, graph_id, owner, name, record):
+        lease = record["lease"]
+        node = self.nodes.get(lease["node"])
+        if record.get("cancel_requested") or self.clock() >= lease["deadline"]:
+            outcome = "cancelled" if record.get("cancel_requested") else "timed-out"
+            self._finish_lease(graph_id, owner, name, lease, outcome,
+                               retry=outcome == "timed-out", quarantine=True)
+            return
+        if node is None or not getattr(node, "boot_id", None):
+            return
+        if node.boot_id != lease["worker_boot_id"]:
+            self._finish_lease(graph_id, owner, name, lease, "failed", retry=True)
+            return
+        try:
+            reply = self._lease_reply(node, lease)
+            status = reply["status"]
+            if status == "missing" and not record.get("acknowledged"):
+                if self.clock() < lease["deadline"]:
+                    node.lease_dispatch(lease, record["input"])
+                    self._observe(graph_id, owner, name, lease["attempt"], acknowledged=True)
+            elif status in {"queued", "running"}:
+                self._observe(graph_id, owner, name, lease["attempt"], acknowledged=True)
+            elif status == "completed":
+                self.publish(graph_id, owner, name, lease["attempt"],
+                             reply["data"], reply["sha256"], lease=reply["lease"],
+                             worker_id=lease["node"])
+            else:
+                self._finish_lease(graph_id, owner, name, lease,
+                                   "failed" if status == "missing" else status, retry=status != "cancelled",
+                                   quarantine=status == "missing")
+        except ConnectionError:
+            return
+        except (ValueError, TypeError, KeyError):
+            self._finish_lease(graph_id, owner, name, lease, "failed", quarantine=True)
+
+    def _reconcile_quarantine(self):
+        with closing(sqlite3.connect(self.path)) as db:
+            self._assert_epoch(db)
+            rows = db.execute("SELECT attempt, node, lease FROM lease_quarantine").fetchall()
+        for attempt, node_id, raw in rows:
+            lease, node = json.loads(raw), self.nodes.get(node_id)
+            if node is None or not getattr(node, "boot_id", None):
+                continue
+            try:
+                if node.boot_id == lease["worker_boot_id"]:
+                    node.lease_cancel(lease)
+                    if self._lease_reply(node, lease)["status"] not in TERMINAL:
+                        continue
+            except (ConnectionError, ValueError, TypeError, KeyError):
+                continue
+            with closing(sqlite3.connect(self.path)) as db, db:
+                db.execute("BEGIN IMMEDIATE")
+                self._assert_epoch(db)
+                db.execute("DELETE FROM lease_quarantine WHERE attempt=?", (attempt,))
 
     def _reconcile(self, graph_id, owner, name, record):
         node = self.nodes.get(record["node"])
