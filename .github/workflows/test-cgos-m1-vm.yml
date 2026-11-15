@@ -92,7 +92,12 @@ jobs:
           timeout 40s systemctl is-system-running --wait
           systemctl is-active cgos.service
           systemctl show cgos.service -p MainPID -p DynamicUser -p ActiveState
-          test -S /run/cgos/api.sock
+          if ! timeout 30s sh -c 'until test -S /run/cgos/api.sock; do sleep 0.25; done'; then
+              echo 'CGOS Unix socket did not appear within 30 seconds' >&2
+              ls -la /run/cgos /var/lib/cgos || true
+              systemctl status cgos.service --no-pager --full || true
+              exit 1
+          fi
           echo CGOS_SERVICE_ACTIVE
           cgos diagnostics
           cgos graph submit /usr/share/cgos/reference-graph.json
