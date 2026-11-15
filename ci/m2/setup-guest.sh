@@ -61,7 +61,11 @@ KbdInteractiveAuthentication no
 PermitEmptyPasswords no
 PermitRootLogin no
 StrictModes yes
+PidFile none
 DisableForwarding yes
+AllowTcpForwarding no
+AllowAgentForwarding no
+X11Forwarding no
 PermitTTY no
 PermitUserRC no
 PermitUserEnvironment no

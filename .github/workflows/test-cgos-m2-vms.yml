@@ -65,6 +65,10 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends qemu-system-x86 seabios ovmf xorriso openssh-client
+      - name: Check guest script syntax
+        run: |
+          bash -n ci/m2/check-ssh.sh
+          sh -n ci/m2/setup-guest.sh
       - name: Boot two guests and exercise the full matrix
         run: timeout --kill-after=15s 1500s python3 -B ci/m2/boot-and-test.py
       - name: Collect trial records and verdict

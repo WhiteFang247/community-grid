@@ -4,7 +4,7 @@ export LC_ALL=C
 secret=$(mktemp /run/cgos-test-private/unknown.XXXXXX)
 trap 'rm -f "$secret"' EXIT
 install -m 0600 /run/cgos-test-private/media/unknown "$secret"
-probe={"version":2,"action":"probe"}'
+probe='{"version":2,"action":"probe"}'
 base=(ssh -F /dev/null -p 22227 -o BatchMode=yes -o IdentitiesOnly=yes
       -o StrictHostKeyChecking=yes -o GlobalKnownHostsFile=/dev/null -o ConnectTimeout=2)
 for n in A B; do
