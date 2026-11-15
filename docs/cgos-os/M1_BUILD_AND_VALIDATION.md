@@ -1,6 +1,6 @@
 # CGOS 0.1-M1 build and validation
 
-M1 is partially complete. The local runtime and ISO profile are implemented. The Lenovo workspace lacks Debian live-build and a usable Linux VM or container. Git Bash was denied at startup by the Windows sandbox, so shell syntax and systemd validation also remain pending on Linux. No ISO, built package manifest, checksum, or boot evidence was produced.
+M1 is accepted for the exact published ISO. See the [acceptance record](M1_ACCEPTANCE.md) for the verified source, checksums, passing BIOS and UEFI results, and remaining limitations.
 
 ## Source and build
 
