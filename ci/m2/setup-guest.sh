@@ -29,6 +29,12 @@ iface=$(ls /sys/class/net | grep -vx lo)
 test "$(printf '%s\n' "$iface" | wc -l)" -eq 1
 case "$role" in A) address=10.44.0.1;; B) address=10.44.0.2;; *) exit 1;; esac
 phase=isolated-network
+# The live image can start DHCP/IPv4 link-local fallback. These guests
+# have exactly one disposable NIC and use only the fixture's /30.
+systemctl stop "ifup@$iface.service"
+ip -4 addr flush dev "$iface"
+ip -4 route flush default dev "$iface"
+ip -6 route flush default dev "$iface"
 ip link set "$iface" up
 ip addr add "$address/30" dev "$iface"
 ip -br address
