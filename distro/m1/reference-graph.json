@@ -1,0 +1,18 @@
+{
+  "id": "m1-reference",
+  "owner": "local",
+  "version": 1,
+  "timeout": 30,
+  "units": {
+    "normalize": {
+      "op": "text.normalize", "input_type": "text", "output_type": "text",
+      "nodes": ["local"], "depends": [], "value": "  seed   library  ",
+      "cpu": 1, "ram_mib": 32, "timeout": 10, "attempts": 2, "side_effects": "none"
+    },
+    "hash": {
+      "op": "text.sha256", "input_type": "text", "output_type": "text",
+      "nodes": ["local"], "depends": ["normalize"], "from": "normalize",
+      "cpu": 1, "ram_mib": 32, "timeout": 10, "attempts": 2, "side_effects": "none"
+    }
+  }
+}

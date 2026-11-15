@@ -1,0 +1,30 @@
+[Unit]
+Description=CGOS local graph runtime
+After=local-fs.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+RuntimeDirectory=cgos
+RuntimeDirectoryMode=0750
+StateDirectory=cgos
+StateDirectoryMode=0700
+Environment=PYTHONPATH=/opt/cgos/runtime
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStartPre=/usr/bin/rm -f /run/cgos/api.sock
+ExecStart=/usr/bin/python3 -m community_grid.native serve --state /var/lib/cgos
+Restart=on-failure
+TimeoutStopSec=10
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+RestrictAddressFamilies=AF_UNIX
+CapabilityBoundingSet=
+MemoryMax=256M
+CPUQuota=100%
+TasksMax=8
+
+[Install]
+WantedBy=multi-user.target

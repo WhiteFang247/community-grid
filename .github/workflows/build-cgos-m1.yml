@@ -1,0 +1,55 @@
+name: Build CGOS 0.1-M1 ISO
+on:
+  workflow_dispatch:
+  push:
+    branches: ['cgos/0.1-m1']
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    container:
+      image: debian:trixie
+      options: --privileged
+    steps:
+      - name: Install disposable builder dependencies
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git python3 live-build debootstrap xorriso squashfs-tools ca-certificates
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate source and run Linux tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain)"
+          for script in distro/build-iso.sh distro/m1/build.sh distro/m1/cgos distro/m1/*.hook.chroot; do
+            bash -n "$script"
+          done
+          PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=runtime python3 -m unittest discover -s runtime/tests -v
+      - name: Build and verify image
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash distro/build-iso.sh m1
+          cd .build/cgos-m1
+          test "$(cat manifest/source-commit.txt)" = "$GITHUB_SHA"
+          test ! -s manifest/source-status.txt
+          sha256sum -c SHA256SUMS
+          xorriso -indev live-image-amd64.hybrid.iso -report_el_torito plain > manifest/el-torito.txt
+          grep -E 'El Torito boot img.*BIOS' manifest/el-torito.txt
+          grep -E 'El Torito boot img.*UEFI' manifest/el-torito.txt
+          dpkg-query -W > manifest/builder-all-packages.txt
+          mkdir -p "$GITHUB_WORKSPACE/m1-artifact"
+          cp live-image-amd64.hybrid.iso SHA256SUMS "$GITHUB_WORKSPACE/m1-artifact/"
+          cp -r manifest "$GITHUB_WORKSPACE/m1-artifact/"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cgos-0.1-m1-amd64-${{ github.sha }}
+          path: m1-artifact/
+          if-no-files-found: error
+          retention-days: 14

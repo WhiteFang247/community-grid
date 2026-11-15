@@ -2,11 +2,20 @@
 set -euo pipefail
 # Run on Debian Trixie amd64 as root in a disposable build environment.
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-WORK="${WORK:-$ROOT/.build/community-grid-live}"
+case "${1:-preview}" in
+  preview) default_work="$ROOT/.build/community-grid-live" ;;
+  m1) default_work="$ROOT/.build/cgos-m1" ;;
+  *) echo "Usage: $0 [preview|m1]" >&2; exit 2 ;;
+esac
+WORK="${WORK:-$default_work}"
 if [[ "$(id -u)" != 0 ]]; then echo "Run as root on a disposable Debian build host" >&2; exit 1; fi
 command -v lb >/dev/null || { echo "Install live-build first" >&2; exit 1; }
 mkdir -p "$WORK"
 cd "$WORK"
+if [[ "${1:-preview}" == m1 ]]; then
+  source "$ROOT/distro/m1/build.sh"
+  exit 0
+fi
 lb config --distribution trixie --architectures amd64 --binary-images iso-hybrid \
   --debian-installer none --bootappend-live "boot=live components username=user" \
   --archive-areas "main contrib non-free-firmware" --mirror-bootstrap http://deb.debian.org/debian/ \

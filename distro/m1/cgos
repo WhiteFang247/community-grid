@@ -1,0 +1,3 @@
+#!/bin/sh
+export PYTHONPATH=/opt/cgos/runtime
+exec /usr/bin/python3 -m community_grid.native "$@"

@@ -1,0 +1,4 @@
+#!/bin/sh
+set -eu
+systemctl enable cgos.service
+printf '\nCommunity Grid OS 0.1-M1\n' > /etc/issue
