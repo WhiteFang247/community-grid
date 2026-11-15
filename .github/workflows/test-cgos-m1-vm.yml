@@ -70,7 +70,7 @@ jobs:
       - name: Install disposable VM tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends qemu-system-x86 seabios ovmf xorriso tesseract-ocr
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 seabios ovmf xorriso
       - name: Boot guest and validate runtime
         run: |
           set -euo pipefail
@@ -89,10 +89,11 @@ jobs:
           findmnt /
           findmnt -n -o TARGET,SOURCE,FSTYPE,OPTIONS --mountpoint /run/live/medium
           test "$(findmnt -n -o FSTYPE --mountpoint /run/live/medium)" = iso9660
-          systemctl is-system-running --wait
+          timeout 40s systemctl is-system-running --wait
           systemctl is-active cgos.service
           systemctl show cgos.service -p MainPID -p DynamicUser -p ActiveState
           test -S /run/cgos/api.sock
+          echo CGOS_SERVICE_ACTIVE
           cgos diagnostics
           cgos graph submit /usr/share/cgos/reference-graph.json
           python3 - <<'PY'
@@ -135,12 +136,15 @@ jobs:
           echo "M1_VM_PASS $mode"
           SH
           xorriso -as mkisofs -r -V CGOSCHECK -o guest-tools.iso guest-tools
-          timeout --kill-after=10s 380s python3 - <<'PY'
+          timeout --kill-after=10s 540s python3 - <<'PY'
           import fcntl,json,os,pathlib,re,shutil,socket,subprocess,time
           mode=os.environ['VM_MODE']
           out=pathlib.Path('evidence').resolve()
-          sock=out.parent/'qmp.sock'
+          qpath=out.parent/'qmp.sock'
+          spath=out.parent/'guest-command.sock'
           serial=out/'guest-serial.log'
+          start=time.monotonic()
+          last='artifact and runner verified'
           accel='tcg'
           try:
               with open('/dev/kvm','r+b',buffering=0) as dev:
@@ -151,84 +155,147 @@ jobs:
                '-display','none','-boot','order=d,strict=on','-no-reboot',
                '-cdrom','artifact/live-image-amd64.hybrid.iso',
                '-drive','if=virtio,file=guest-tools.iso,format=raw,readonly=on',
-               '-serial',f'file:{serial}','-qmp',f'unix:{sock},server=on,wait=off']
+               '-serial',f'file:{serial}','-serial',f'unix:{spath},server=on,wait=off',
+               '-qmp',f'unix:{qpath},server=on,wait=off']
           if mode=='uefi':
-              firmware='/usr/share/OVMF/OVMF_CODE_4M.fd'
               varsfile=out.parent/'vm-vars.fd'
               shutil.copyfile('/usr/share/OVMF/OVMF_VARS_4M.fd',varsfile)
-              cmd+=['-drive',f'if=pflash,format=raw,readonly=on,file={firmware}',
+              cmd+=['-drive','if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd',
                     '-drive',f'if=pflash,format=raw,file={varsfile}']
           else:
               cmd+=['-bios','/usr/share/seabios/bios.bin']
           (out/'firmware.txt').write_text(f'{mode} acceleration={accel}\n'+subprocess.check_output(['qemu-system-x86_64','--version'],text=True)+json.dumps(cmd)+'\n')
-          (out/'result.txt').write_text(f'FAIL {mode}: guest acceptance did not finish\n')
-          with (out/'qemu.log').open('wb') as log, (out/'command.log').open('w', buffering=1) as trace:
+          with (out/'qemu.log').open('wb') as log, (out/'command.log').open('w',buffering=1) as trace, (out/'guest-command-serial.log').open('wb',buffering=0) as guestlog:
+              def checkpoint(s):
+                  global last
+                  last=s
+                  print(f'{time.monotonic()-start:.1f}s {s}',file=trace,flush=True)
+                  print(f'{mode}: {s}',flush=True)
+          
               proc=subprocess.Popen(cmd,stdout=log,stderr=subprocess.STDOUT)
+              def connect(path,seconds):
+                  deadline=time.monotonic()+seconds
+                  conn=socket.socket(socket.AF_UNIX)
+                  while time.monotonic()<deadline and proc.poll() is None:
+                      try:
+                          conn.connect(str(path))
+                          return conn
+                      except OSError:
+                          time.sleep(.1)
+                  conn.close()
+                  raise RuntimeError(f'QEMU socket not ready: {path.name}')
+              def textlog():
+                  return serial.read_text(errors='replace') if serial.exists() else ''
               try:
-                  deadline=time.monotonic()+15
-                  while not sock.exists():
-                      if proc.poll() is not None or time.monotonic()>deadline: raise RuntimeError('QEMU did not open its monitor')
-                      time.sleep(.1)
-                  with socket.socket(socket.AF_UNIX) as conn:
-                      conn.settimeout(10)
-                      conn.connect(str(sock))
-                      with conn.makefile('rwb') as io:
-                          io.readline()
-                          def qmp(command,args=None):
-                              io.write(json.dumps({'execute':command,'arguments':args or {}}).encode()+b'\n')
-                              io.flush()
-                              while True:
-                                  line=io.readline()
-                                  if not line: raise RuntimeError('QMP closed')
-                                  reply=json.loads(line)
-                                  if 'error' in reply: raise RuntimeError(reply)
-                                  if 'return' in reply: return reply['return']
-                          qmp('qmp_capabilities')
-                          def screenshot(name):
-                              path=out/(name+'.ppm')
-                              qmp('screendump',{'filename':str(path)})
-                              ocr=subprocess.run(['tesseract',str(path),'stdout','--psm','11'],capture_output=True,text=True,timeout=8).stdout.lower()
-                              (out/(name+'.txt')).write_text(ocr)
-                              return ocr
-                          def observe(name,condition,seconds):
-                              until=time.monotonic()+seconds
-                              while time.monotonic()<until:
-                                  ocr=screenshot(name)
-                                  if condition(ocr): return ocr
-                                  time.sleep(2)
-                              raise RuntimeError(f'{name} was not observed before deadline')
-                          def key(k):
-                              qmp('human-monitor-command',{'command-line':f'sendkey {k} 20'})
-                              time.sleep(.045)
-                          symbols={' ':'spc','/':'slash','-':'minus',"'":'apostrophe','&':'shift-7','>':'shift-dot','.':'dot',':':'shift-semicolon','S':'shift-s'}
-                          def enter(s):
-                              trace.write(s+'\n')
-                              for ch in s: key(symbols.get(ch,ch))
+                  with connect(qpath,15) as monitor, connect(spath,15) as channel, monitor.makefile('rwb') as io:
+                      monitor.settimeout(10)
+                      channel.settimeout(.5)
+                      io.readline()
+                      def qmp(command,args=None):
+                          io.write(json.dumps({'execute':command,'arguments':args or {}}).encode()+b'\n')
+                          io.flush()
+                          while True:
+                              line=io.readline()
+                              if not line: raise RuntimeError('QMP closed')
+                              reply=json.loads(line)
+                              if 'error' in reply: raise RuntimeError(reply)
+                              if 'return' in reply: return reply['return']
+                      qmp('qmp_capabilities')
+                      def shot(name):
+                          qmp('screendump',{'filename':str(out/(name+'.ppm'))})
+                      def key(*keys):
+                          qmp('send-key',{'keys':[{'type':'qcode','data':k} for k in keys],'hold-time':30})
+                          time.sleep(.055)
+                      symbols={' ':'spc','/':'slash','-':'minus','_':('shift','minus'),'+':('shift','equal'),'=':'equal','.':'dot',',':'comma'}
+                      def type_keys(s):
+                          for ch in s:
+                              k=symbols.get(ch,('shift',ch.lower()) if ch.isupper() else ch)
+                              key(*(k if isinstance(k,tuple) else (k,)))
+                      def send(s):
+                          print('serial >',s,file=trace)
+                          channel.sendall((s+'\r').encode())
+                      transcript=bytearray()
+                      def receive():
+                          try: data=channel.recv(65536)
+                          except TimeoutError: return
+                          if not data: raise RuntimeError('guest command serial disconnected')
+                          guestlog.write(data)
+                          transcript.extend(data)
+                          if len(transcript)>4*1024*1024: raise RuntimeError('guest command log exceeded limit')
+                      def wait_for(predicate,seconds,reason):
+                          deadline=time.monotonic()+seconds
+                          while time.monotonic()<deadline and proc.poll() is None:
+                              if predicate(): return
+                              receive()
+                          raise RuntimeError(reason)
+                      try:
+                          checkpoint('QEMU firmware started ('+qmp('query-status')['status']+')')
+                          # Stock menus have no automatic timeout. Allow ample firmware time before
+                          # selecting the stock entry or entering temporary GRUB commands.
+                          time.sleep(22 if mode=='uefi' else 15)
+                          shot('stock-boot-menu')
+                          args=' console=ttyS0,115200n8 systemd.debug_shell=ttyS1'
+                          if mode=='bios':
+                              key('tab')
+                              time.sleep(1)
+                              shot('edited-boot-menu')
+                              key('end')
+                              type_keys(args)
+                              shot('boot-arguments')
                               key('ret')
-                          observe('boot-menu',lambda s: 'live system' in s or ('amd64' in s and 'utilities' in s),60)
-                          key('ret')
-                          prompt=lambda s: bool(re.search(r'user@cgos\s*:',s))
-                          visible=observe('guest-console',lambda s: prompt(s) or 'cgos login:' in s,150)
-                          if not prompt(visible):
-                              enter('user')
-                              time.sleep(1)
-                              enter('live')
-                              observe('guest-session',prompt,30)
-                          enter("sudo sh -c 'mount -o ro /dev/vda /mnt && sh /mnt/check.sh >/dev/ttyS0 2>&1'")
-                          deadline=time.monotonic()+100
-                          while time.monotonic()<deadline:
-                              evidence=serial.read_text(errors='replace') if serial.exists() else ''
-                              if 'CGOS_VM_EXIT=' in evidence: break
-                              if proc.poll() is not None: raise RuntimeError('QEMU exited during guest checks')
-                              time.sleep(1)
                           else:
-                              screenshot('acceptance-timeout')
-                              raise RuntimeError('guest acceptance timed out')
-                          if f'M1_VM_PASS {mode}' not in evidence or 'CGOS_VM_EXIT=0' not in evidence:
-                              raise RuntimeError('guest validation failed or incorrect firmware mode; see serial log')
-                          (out/'result.txt').write_text(f'PASS {mode}\n')
+                              key('c')
+                              time.sleep(1)
+                              shot('grub-command-menu')
+                              # Exact stock GRUB entry, with empty findiso and two extra arguments.
+                              type_keys('linux /live/vmlinuz-6.12.117+deb13-amd64 boot=live components username=user hostname=cgos findiso='+args)
+                              key('ret')
+                              time.sleep(2)
+                              type_keys('initrd /live/initrd.img-6.12.117+deb13-amd64')
+                              key('ret')
+                              time.sleep(2)
+                              shot('boot-arguments')
+                              type_keys('boot')
+                              key('ret')
+                          wait_for(lambda:'Linux version ' in textlog(),90,'no Linux kernel on ttyS0 after bootloader input')
+                          checkpoint('stock bootloader reached and Linux kernel started')
+                          wait_for(lambda:bool(re.search(r'systemd\[1\].*(running|system mode)|Started .*Journal',textlog())),150,'installed live userspace was not observed')
+                          checkpoint('Debian Live userspace started')
+                          probe_end=time.monotonic()+35
+                          next_probe=0
+                          while not re.search(rb'CGOS_SERIAL_READY\r*\n0\r*\n/dev/ttyS1\r*\n',transcript):
+                              if time.monotonic()>=probe_end or proc.poll() is not None:
+                                  raise RuntimeError('systemd debug shell on ttyS1 did not answer')
+                              if time.monotonic()>=next_probe:
+                                  send("printf 'CGOS_SERIAL_%s\\n' READY; id -u; tty")
+                                  next_probe=time.monotonic()+4
+                              receive()
+                          checkpoint('serial command interface verified as VM root on ttyS1')
+                          send("mount -o ro /dev/vda /mnt && /bin/sh /mnt/check.sh; printf 'CGOS_COMMAND_%s=%s\\n' EXIT \"$?\"")
+                          deadline=time.monotonic()+140
+                          while time.monotonic()<deadline:
+                              data=bytes(transcript)
+                              if last=='serial command interface verified as VM root on ttyS1' and b'CGOS_SERVICE_ACTIVE' in data:
+                                  checkpoint('CGOS service and Unix socket available')
+                              match=re.search(rb'CGOS_COMMAND_EXIT=(\d+)',data)
+                              if match:
+                                  if match[1]!=b'0' or f'M1_VM_PASS {mode}'.encode() not in data or b'CGOS_VM_EXIT=0' not in data:
+                                      raise RuntimeError('guest functional checks failed; see guest command serial')
+                                  break
+                              if proc.poll() is not None: raise RuntimeError('QEMU exited during functional checks')
+                              receive()
+                          else: raise RuntimeError('guest functional checks timed out')
+                          checkpoint('functional tests completed')
+                          (out/'result.txt').write_text(f'PASS {mode} after {time.monotonic()-start:.1f}s\n')
+                      finally:
+                          try:
+                              status=qmp('query-status')
+                              (out/'qmp-status.json').write_text(json.dumps(status)+'\n')
+                              shot('final-screen')
+                          except Exception as exc:
+                              print('Final QMP collection failed:',exc,file=trace)
               except Exception as exc:
-                  (out/'result.txt').write_text(f'FAIL {mode}: {exc}\n')
+                  (out/'result.txt').write_text(f'FAIL {mode} after {time.monotonic()-start:.1f}s; last checkpoint: {last}; {exc}\n')
                   raise
               finally:
                   if proc.poll() is None:
@@ -237,6 +304,7 @@ jobs:
                       except subprocess.TimeoutExpired:
                           proc.kill()
                           proc.wait(timeout=5)
+                  (out/'qemu-exit.txt').write_text(f'QEMU exit: {proc.returncode}; elapsed: {time.monotonic()-start:.1f}s\n')
           PY
       - name: Publish acceptance evidence
         if: always()
