@@ -18,7 +18,7 @@ from .physical import ssh_transport
 OPS = {"text.normalize": 1, "text.sha256": 1}
 MAX_PEERS = 8
 PROBE_INTERVAL = 2
-OFFLINE_AFTER = 10
+OFFLINE_AFTER = 9.5  # Leave headroom for observing the 10-second gate.
 
 
 def read_manifest(path):

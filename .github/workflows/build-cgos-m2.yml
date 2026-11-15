@@ -9,6 +9,9 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    outputs:
+      artifact-id: ${{ steps.image.outputs.artifact-id }}
+      artifact-digest: ${{ steps.image.outputs.artifact-digest }}
     container:
       image: debian:trixie
       options: --privileged
@@ -59,7 +62,89 @@ jobs:
           cp live-image-amd64.hybrid.iso SHA256SUMS "$GITHUB_WORKSPACE/m2-artifact/"
           cp -r manifest "$GITHUB_WORKSPACE/m2-artifact/"
       - uses: actions/upload-artifact@v4
+        id: image
         with:
           name: cgos-0.1-m2-amd64-${{ github.sha }}
           path: m2-artifact/
+          if-no-files-found: error
+  acceptance:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 32
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Retrieve and verify the exact build artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUNDLE_ID: ${{ needs.build.outputs.artifact-id }}
+          BUNDLE_DIGEST: ${{ needs.build.outputs.artifact-digest }}
+        run: |
+          set -euo pipefail
+          mkdir -p evidence iso
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$BUNDLE_ID" > evidence/iso-artifact.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$BUNDLE_ID/zip" > original.zip
+          python3 - <<'PY'
+          import hashlib,json,os,pathlib,re,zipfile
+          meta=json.loads(pathlib.Path('evidence/iso-artifact.json').read_text())
+          expected=os.environ['GITHUB_SHA']
+          assert meta['workflow_run']['head_sha']==expected
+          assert meta['workflow_run']['id']==int(os.environ['GITHUB_RUN_ID'])
+          assert meta['id']==int(os.environ['BUNDLE_ID']) and not meta['expired']
+          assert meta['name']=='cgos-0.1-m2-amd64-'+expected
+          with open('original.zip','rb') as f: digest=hashlib.file_digest(f,'sha256').hexdigest()
+          assert digest==os.environ['BUNDLE_DIGEST'].removeprefix('sha256:')
+          assert meta.get('digest') in (None,'sha256:'+digest)
+          with zipfile.ZipFile('original.zip') as z:
+              names=z.namelist()
+              assert len(names)==len(set(names))
+              assert sum(i.file_size for i in z.infolist())<700_000_000
+              assert all(re.fullmatch(r'(live-image-amd64\.hybrid\.iso|SHA256SUMS|manifest/[A-Za-z0-9_.+-]+)',n) for n in names)
+              z.extractall('iso')
+          PY
+          test "$(cat iso/manifest/source-commit.txt)" = "$GITHUB_SHA"
+          test ! -s iso/manifest/source-status.txt
+          sha256sum -c iso/manifest/build-inputs.SHA256SUMS
+          (cd iso && sha256sum -c SHA256SUMS)
+          cp iso/SHA256SUMS evidence/ISO-SHA256SUMS
+          cp iso/manifest/source-commit.txt evidence/source-commit.txt
+      - name: Install disposable VM tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 seabios ovmf xorriso openssh-client
+      - name: Boot two guests and exercise the full matrix
+        run: timeout --kill-after=15s 1500s python3 -B ci/m2/boot-and-test.py
+      - name: Collect trial records and verdict
+        if: always()
+        run: |
+          mkdir -p evidence
+          python3 - <<'PY'
+          import json,pathlib
+          out=pathlib.Path('evidence')
+          serial=out/'A/command-serial.log'
+          log=serial.read_text(errors='replace') if serial.exists() else ''
+          trials=[json.loads(s.split(' ',1)[1]) for s in log.splitlines() if s.startswith('M2_TRIAL ')]
+          with (out/'trials.jsonl').open('w') as f:
+              for trial in trials: f.write(json.dumps(trial)+'\n')
+          verdicts=[json.loads(s.split(' ',1)[1]) for s in log.splitlines() if s.startswith('M2_VERDICT ')]
+          expected=dict(warmup=5,healthy=30,local=30,lost=20,restart=20,offline=20,cancel=20)
+          counts={name:sum(t['mode']==name for t in trials) for name in expected}
+          valid=bool(verdicts and verdicts[-1]['status']=='PASS' and counts==expected
+                     and all(t['status']=='pass' for t in trials))
+          verdict={'status':'PASS' if valid else 'NOT ACCEPTED',
+                   'completed_trial_counts':counts,'required_trial_counts':expected,
+                   'guest_verdict':verdicts[-1] if verdicts else None}
+          (out/'verdict.json').write_text(json.dumps(verdict,indent=2)+'\n')
+          print(json.dumps(verdict,indent=2))
+          if not valid: raise SystemExit(1)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cgos-m2-two-vm-evidence-${{ github.sha }}
+          path: evidence/
           if-no-files-found: error

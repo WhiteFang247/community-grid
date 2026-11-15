@@ -2,3 +2,4 @@
 /distro/m1/* text eol=lf
 /.github/workflows/build-cgos-m1.yml text eol=lf
 distro/m2/* text eol=lf
+ci/m2/* text eol=lf

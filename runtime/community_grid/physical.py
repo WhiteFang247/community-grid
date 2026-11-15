@@ -122,6 +122,7 @@ def process_transport(argv, *, timeout=5):
         if len(payload) > LIMIT:
             raise ValueError("Oversized relay request")
         output = []
+        deadline = time.monotonic() + timeout
         try:
             with tempfile.TemporaryFile() as source:
                 source.write(payload)
@@ -130,7 +131,7 @@ def process_transport(argv, *, timeout=5):
                                       stderr=subprocess.DEVNULL) as child:
                     reader = Thread(target=lambda: output.append(child.stdout.read(LIMIT + 1)))
                     reader.start()
-                    reader.join(timeout=timeout)
+                    reader.join(timeout=max(0, deadline - time.monotonic()))
                     if reader.is_alive():
                         child.kill()
                         reader.join()
@@ -139,7 +140,7 @@ def process_transport(argv, *, timeout=5):
                         child.kill()
                         raise ValueError("Invalid or oversized relay response")
                     try:
-                        code = child.wait(timeout=1)
+                        code = child.wait(timeout=max(0, deadline - time.monotonic()))
                     except subprocess.TimeoutExpired:
                         child.kill()
                         raise
@@ -170,7 +171,7 @@ def ssh_transport(address, user, identity, known_hosts, port=22227, *, enrolled=
         "-o", "UpdateHostKeys=no", "-o", "ClearAllForwardings=yes", "-o", "ConnectTimeout=3",
         "-o", f'UserKnownHostsFile="{pin}"', "-o", f"GlobalKnownHostsFile={os.devnull}",
         *options, f"{user}@{address}",
-    ])
+    ], timeout=3 if enrolled else 5)
 
 
 def main():
