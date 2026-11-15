@@ -20,7 +20,13 @@ OPS = ("text.normalize", "text.sha256")
 LIMIT = 65536
 
 
-def handle(path, request, *, ram_mib=128, clock=time.time):
+def handle(path, request, *, ram_mib=128, clock=time.time, worker=None):
+    if "version" in request:
+        if worker is None:
+            raise ValueError("Versioned worker protocol is disabled")
+        return worker.request(request)
+    if worker is not None:
+        raise ValueError("Versioned worker protocol requires version 2")
     action = request.get("action")
     if action == "probe" and set(request) == {"action"}:
         return {"operations": OPS, "cpu": 1, "ram_mib": ram_mib}
@@ -164,7 +170,12 @@ def ssh_transport(address, user, identity, known_hosts, port=22227):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("database")
+    parser.add_argument("--coordinator")
+    parser.add_argument("--node")
+    parser.add_argument("--memory-mib", type=int, default=128)
     args = parser.parse_args()
+    if (args.coordinator is None) != (args.node is None):
+        parser.error("--coordinator and --node must be provided together")
     if os.environ.get("SSH_ORIGINAL_COMMAND"):
         return 2
     try:
@@ -174,7 +185,15 @@ def main():
         request = json.loads(data)
         if not isinstance(request, dict):
             raise ValueError("Expected request object")
-        sys.stdout.buffer.write(encode(handle(args.database, request)))
+        worker = None
+        if args.node is not None:
+            from .worker_v2 import Worker
+            worker = Worker(args.database, args.coordinator, args.node,
+                            Path("/proc/sys/kernel/random/boot_id").read_text().strip(), args.memory_mib)
+        reply = encode(handle(args.database, request, worker=worker))
+        if len(reply) > LIMIT:
+            raise ValueError("Response exceeds wire limit")
+        sys.stdout.buffer.write(reply)
     except (KeyError, TypeError, ValueError, RecursionError):
         return 2
     return 0
