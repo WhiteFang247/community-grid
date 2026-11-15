@@ -1,0 +1,12 @@
+#!/bin/sh
+set -eu
+effective="$(/usr/sbin/sshd -T -f /etc/cgos/distributed/sshd_config)"
+for rule in 'authenticationmethods publickey' 'pubkeyauthentication yes' 'passwordauthentication no' 'kbdinteractiveauthentication no' 'permitemptypasswords no' 'permitrootlogin no' 'disableforwarding yes' 'permittty no' 'permituserrc no' 'permituserenvironment no' 'strictmodes yes' 'forcecommand /usr/local/libexec/cgos-worker-relay'; do
+    printf '%s\n' "$effective" | grep -Fxq "$rule"
+done
+! printf '%s\n' "$effective" | grep -Eq '^(subsystem |listenaddress (0\.0\.0\.0|\[::\]):)'
+grep -Eq '^allowusers cgos-worker@[0-9.]+$' <<EOF
+$effective
+EOF
+# Disallow conditional policy bypasses. Use only the documented standalone file.
+! grep -Eiq '^[[:space:]]*(include|match)[[:space:]]' /etc/cgos/distributed/sshd_config

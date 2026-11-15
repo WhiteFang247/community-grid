@@ -1,0 +1,24 @@
+[Unit]
+Description=CGOS durable CPU worker executor
+ConditionPathExists=/etc/cgos/distributed/worker.env
+
+[Service]
+User=cgos-worker
+Group=cgos-worker
+StateDirectory=cgos-worker
+StateDirectoryMode=0700
+Environment=PYTHONPATH=/opt/cgos/runtime
+Environment=PYTHONDONTWRITEBYTECODE=1
+EnvironmentFile=/etc/cgos/distributed/worker.env
+ExecStart=/usr/bin/python3 -m community_grid.worker_v2 /var/lib/cgos-worker/worker.db --coordinator ${CGOS_COORDINATOR} --node ${CGOS_NODE}
+NoNewPrivileges=yes
+ProtectHome=yes
+ProtectSystem=strict
+PrivateTmp=yes
+PrivateDevices=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX
+MemoryMax=256M
+CPUQuota=100%
+TasksMax=12
+TimeoutStopSec=10

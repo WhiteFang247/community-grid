@@ -1,0 +1,8 @@
+#!/bin/sh
+set -eu
+useradd -r -M -d /var/lib/cgos-worker -s /bin/sh cgos-worker
+useradd -r -M -d /var/lib/cgos-coordinator -s /usr/sbin/nologin cgos-coordinator
+systemctl disable ssh.service ssh.socket
+systemctl mask ssh.service ssh.socket
+rm -f /etc/ssh/ssh_host_*_key /etc/ssh/ssh_host_*_key.pub
+printf '\nCommunity Grid OS 0.1-M2\n' > /etc/issue

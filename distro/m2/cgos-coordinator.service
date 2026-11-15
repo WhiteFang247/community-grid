@@ -1,0 +1,27 @@
+[Unit]
+Description=CGOS distributed coordinator
+After=network.target
+ConditionPathExists=/etc/cgos/distributed/nodes.json
+
+[Service]
+User=cgos-coordinator
+Group=cgos-coordinator
+RuntimeDirectory=cgos-coordinator
+RuntimeDirectoryMode=0700
+StateDirectory=cgos-coordinator
+StateDirectoryMode=0700
+Environment=PYTHONPATH=/opt/cgos/runtime
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStartPre=/usr/bin/rm -f /run/cgos-coordinator/api.sock
+ExecStart=/usr/bin/python3 -m community_grid.native --socket /run/cgos-coordinator/api.sock serve --state /var/lib/cgos-coordinator --enrollment /etc/cgos/distributed/nodes.json
+NoNewPrivileges=yes
+ProtectHome=yes
+ProtectSystem=strict
+PrivateTmp=yes
+PrivateDevices=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+MemoryMax=256M
+CPUQuota=100%
+TasksMax=32
+TimeoutStopSec=15

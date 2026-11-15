@@ -5,14 +5,16 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 case "${1:-preview}" in
   preview) default_work="$ROOT/.build/community-grid-live" ;;
   m1) default_work="$ROOT/.build/cgos-m1" ;;
-  *) echo "Usage: $0 [preview|m1]" >&2; exit 2 ;;
+  m2) default_work="$ROOT/.build/cgos-m2" ;;
+  *) echo "Usage: $0 [preview|m1|m2]" >&2; exit 2 ;;
 esac
 WORK="${WORK:-$default_work}"
 if [[ "$(id -u)" != 0 ]]; then echo "Run as root on a disposable Debian build host" >&2; exit 1; fi
 command -v lb >/dev/null || { echo "Install live-build first" >&2; exit 1; }
 mkdir -p "$WORK"
 cd "$WORK"
-if [[ "${1:-preview}" == m1 ]]; then
+if [[ "${1:-preview}" == m1 || "${1:-preview}" == m2 ]]; then
+  CGOS_PROFILE="${1:-preview}"
   source "$ROOT/distro/m1/build.sh"
   exit 0
 fi
