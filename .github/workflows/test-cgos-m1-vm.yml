@@ -1,0 +1,271 @@
+name: CGOS 0.1-M1 VM acceptance
+on:
+  workflow_dispatch:
+  push:
+    branches: ['cgos/0.1-m1-vm-acceptance']
+    paths: ['.github/workflows/test-cgos-m1-vm.yml']
+permissions:
+  contents: read
+  actions: read
+jobs:
+  vm:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [bios, uefi]
+    env:
+      VM_MODE: ${{ matrix.mode }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 55efca4f3a0995337f40f50428946dc0b6ed83dd
+          persist-credentials: false
+      - name: Fetch and verify original artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          printf 'FAIL %s: artifact or runner preparation incomplete\n' "$VM_MODE" > evidence/result.txt
+          gh api repos/WhiteFang247/community-grid/actions/runs/43684773526 > run.json
+          gh api repos/WhiteFang247/community-grid/actions/artifacts/14150475330 > artifact.json
+          gh api repos/WhiteFang247/community-grid/actions/artifacts/14150475330/zip > original.zip
+          python3 - <<'PY'
+          import hashlib,json,pathlib,re,subprocess,zipfile
+          def check(x,msg):
+              if not x: raise SystemExit(msg)
+          def digest(p):
+              with p.open('rb') as f: return hashlib.file_digest(f,'sha256').hexdigest()
+          sha='55efca4f3a0995337f40f50428946dc0b6ed83dd'
+          iso_hash='7da3524dcce941001f0caf5eeb2ae812ecb2c81fe97d8512d57c13bc8418c4ab'
+          zip_hash='9e0b4f0124f6a4e08bc6c34ebbc5a673ee8e09d7c64f18af1cd1e18782300226'
+          meta=json.loads(pathlib.Path('artifact.json').read_bytes())
+          run=json.loads(pathlib.Path('run.json').read_bytes())
+          check(run['id']==43684773526 and run['head_sha']==sha and run['conclusion']=='success' and run['path']=='.github/workflows/build-cgos-m1.yml','Build run mismatch')
+          check(meta['id']==14150475330 and meta['workflow_run']['id']==run['id'] and meta['workflow_run']['head_sha']==sha and not meta['expired'] and meta['name']=='cgos-0.1-m1-amd64-'+sha,'Artifact identity mismatch')
+          check(meta.get('digest') in (None,'sha256:'+zip_hash),'Artifact API digest mismatch')
+          archive=pathlib.Path('original.zip')
+          check(archive.stat().st_size==meta['size_in_bytes'] and digest(archive)==zip_hash,'ZIP digest mismatch')
+          root=pathlib.Path('artifact')
+          with zipfile.ZipFile(archive) as z:
+              names=z.namelist()
+              check(len(names)==len(set(names)) and sum(x.file_size for x in z.infolist())<450_000_000,'Unexpected archive size or members')
+              check(all(re.fullmatch(r'(?:live-image-amd64\.hybrid\.iso|SHA256SUMS|manifest/[A-Za-z0-9_.+-]+)',n) for n in names),'Unexpected archive path')
+              z.extractall(root)
+          check((root/'manifest/source-commit.txt').read_text().strip()==sha and not (root/'manifest/source-status.txt').read_bytes(),'Invalid source manifest')
+          check((root/'SHA256SUMS').read_text().split()==[iso_hash,'live-image-amd64.hybrid.iso'] and digest(root/'live-image-amd64.hybrid.iso')==iso_hash,'ISO digest mismatch')
+          check(subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()==sha,'Wrong source checkout')
+          entries={}
+          for line in (root/'manifest/build-inputs.SHA256SUMS').read_text().splitlines():
+              h,name=line.split('  ',1)
+              check(name not in entries and not pathlib.PurePosixPath(name).is_absolute() and '..' not in pathlib.PurePosixPath(name).parts,'Invalid manifest path')
+              check(hashlib.sha256(subprocess.check_output(['git','show',f'HEAD:{name}'])).hexdigest()==h,'Build input digest mismatch: '+name)
+              entries[name]=h
+          check(set(entries)=={'distro/build-iso.sh',*[p.as_posix() for p in pathlib.Path('distro/m1').glob('*')],*[f'runtime/community_grid/{n}.py' for n in ('__init__','graph','physical','native')]},'Incomplete build inputs')
+          pathlib.Path('evidence/provenance.txt').write_text(f'Source commit: {sha}\nBuild run: {run["id"]}\nArtifact: {meta["id"]}\nZIP SHA-256: {zip_hash}\nISO SHA-256: {iso_hash}\nVerified build inputs: {len(entries)}\n')
+          PY
+          cp -r artifact/manifest evidence/
+      - name: Install disposable VM tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 seabios ovmf xorriso tesseract-ocr
+      - name: Boot guest and validate runtime
+        run: |
+          set -euo pipefail
+          mkdir guest-tools
+          cat > guest-tools/check.sh <<'SH'
+          #!/bin/sh
+          set -eu
+          trap 'rc=$?; journalctl -u cgos.service --no-pager || true; echo "CGOS_VM_EXIT=$rc"' EXIT
+          mode=bios
+          if test -d /sys/firmware/efi; then mode=uefi; fi
+          echo "Firmware: $mode"
+          uname -a
+          cat /etc/os-release /proc/cmdline
+          grep -qw boot=live /proc/cmdline
+          test "$(findmnt -n -o FSTYPE /)" = overlay
+          findmnt /
+          findmnt -n -o TARGET,SOURCE,FSTYPE,OPTIONS --mountpoint /run/live/medium
+          test "$(findmnt -n -o FSTYPE --mountpoint /run/live/medium)" = iso9660
+          systemctl is-system-running --wait
+          systemctl is-active cgos.service
+          systemctl show cgos.service -p MainPID -p DynamicUser -p ActiveState
+          test -S /run/cgos/api.sock
+          cgos diagnostics
+          cgos graph submit /usr/share/cgos/reference-graph.json
+          python3 - <<'PY'
+          import hashlib,json,subprocess,time
+          def cli(*args):
+              return json.loads(subprocess.check_output(['cgos',*args],timeout=8))
+          def system(*args):
+              return subprocess.check_output(['systemctl',*args],text=True,timeout=15).strip()
+          def wait_for(check):
+              end=time.monotonic()+30
+              while time.monotonic()<end:
+                  try:
+                      value=check()
+                      if value: return value
+                  except subprocess.CalledProcessError: pass
+                  time.sleep(.2)
+              raise RuntimeError('CGOS readiness/completion timeout')
+          def complete():
+              states=cli('graph','status','m1-reference')
+              return states if set(states)=={'normalize','hash'} and all(x['status']=='completed' for x in states.values()) else None
+          print('Completed tasks:',wait_for(complete),flush=True)
+          value=hashlib.sha256(b'seed library').hexdigest()
+          expected=hashlib.sha256(('"' + value + '"').encode('ascii')).hexdigest()
+          assert expected=='f95b10a11a618ba873c7bdcf675d7a3f4e8bd70997ff309010fbb67ba7eb552b'
+          def result():
+              answer=cli('graph','result','m1-reference','hash')
+              assert answer['value']==value and answer['artifact']['sha256']==expected, answer
+              return answer
+          before=result()
+          print('Independently verified value and artifact:',before,flush=True)
+          pid=system('show','-p','MainPID','--value','cgos.service')
+          system('restart','cgos.service')
+          assert system('is-active','cgos.service')=='active'
+          new=system('show','-p','MainPID','--value','cgos.service')
+          assert int(new)>0 and new!=pid
+          assert wait_for(result)==before
+          assert complete()
+          print('Recovered identical graph state and result after restart:',pid,'->',new,flush=True)
+          PY
+          echo "M1_VM_PASS $mode"
+          SH
+          xorriso -as mkisofs -r -V CGOSCHECK -o guest-tools.iso guest-tools
+          timeout --kill-after=10s 380s python3 - <<'PY'
+          import fcntl,json,os,pathlib,re,shutil,socket,subprocess,time
+          mode=os.environ['VM_MODE']
+          out=pathlib.Path('evidence').resolve()
+          sock=out.parent/'qmp.sock'
+          serial=out/'guest-serial.log'
+          accel='tcg'
+          try:
+              with open('/dev/kvm','r+b',buffering=0) as dev:
+                  if fcntl.ioctl(dev,0xae00)==12: accel='kvm'
+          except OSError:
+              pass
+          cmd=['qemu-system-x86_64','-machine','q35,accel='+accel,'-smp','2','-m','1536','-nic','none',
+               '-display','none','-boot','order=d,strict=on','-no-reboot',
+               '-cdrom','artifact/live-image-amd64.hybrid.iso',
+               '-drive','if=virtio,file=guest-tools.iso,format=raw,readonly=on',
+               '-serial',f'file:{serial}','-qmp',f'unix:{sock},server=on,wait=off']
+          if mode=='uefi':
+              firmware='/usr/share/OVMF/OVMF_CODE_4M.fd'
+              varsfile=out.parent/'vm-vars.fd'
+              shutil.copyfile('/usr/share/OVMF/OVMF_VARS_4M.fd',varsfile)
+              cmd+=['-drive',f'if=pflash,format=raw,readonly=on,file={firmware}',
+                    '-drive',f'if=pflash,format=raw,file={varsfile}']
+          else:
+              cmd+=['-bios','/usr/share/seabios/bios.bin']
+          (out/'firmware.txt').write_text(f'{mode} acceleration={accel}\n'+subprocess.check_output(['qemu-system-x86_64','--version'],text=True)+json.dumps(cmd)+'\n')
+          (out/'result.txt').write_text(f'FAIL {mode}: guest acceptance did not finish\n')
+          with (out/'qemu.log').open('wb') as log, (out/'command.log').open('w', buffering=1) as trace:
+              proc=subprocess.Popen(cmd,stdout=log,stderr=subprocess.STDOUT)
+              try:
+                  deadline=time.monotonic()+15
+                  while not sock.exists():
+                      if proc.poll() is not None or time.monotonic()>deadline: raise RuntimeError('QEMU did not open its monitor')
+                      time.sleep(.1)
+                  with socket.socket(socket.AF_UNIX) as conn:
+                      conn.settimeout(10)
+                      conn.connect(str(sock))
+                      with conn.makefile('rwb') as io:
+                          io.readline()
+                          def qmp(command,args=None):
+                              io.write(json.dumps({'execute':command,'arguments':args or {}}).encode()+b'\n')
+                              io.flush()
+                              while True:
+                                  line=io.readline()
+                                  if not line: raise RuntimeError('QMP closed')
+                                  reply=json.loads(line)
+                                  if 'error' in reply: raise RuntimeError(reply)
+                                  if 'return' in reply: return reply['return']
+                          qmp('qmp_capabilities')
+                          def screenshot(name):
+                              path=out/(name+'.ppm')
+                              qmp('screendump',{'filename':str(path)})
+                              ocr=subprocess.run(['tesseract',str(path),'stdout','--psm','11'],capture_output=True,text=True,timeout=8).stdout.lower()
+                              (out/(name+'.txt')).write_text(ocr)
+                              return ocr
+                          def observe(name,condition,seconds):
+                              until=time.monotonic()+seconds
+                              while time.monotonic()<until:
+                                  ocr=screenshot(name)
+                                  if condition(ocr): return ocr
+                                  time.sleep(2)
+                              raise RuntimeError(f'{name} was not observed before deadline')
+                          def key(k):
+                              qmp('human-monitor-command',{'command-line':f'sendkey {k} 20'})
+                              time.sleep(.045)
+                          symbols={' ':'spc','/':'slash','-':'minus',"'":'apostrophe','&':'shift-7','>':'shift-dot','.':'dot',':':'shift-semicolon','S':'shift-s'}
+                          def enter(s):
+                              trace.write(s+'\n')
+                              for ch in s: key(symbols.get(ch,ch))
+                              key('ret')
+                          observe('boot-menu',lambda s: 'live system' in s or ('amd64' in s and 'utilities' in s),60)
+                          key('ret')
+                          prompt=lambda s: bool(re.search(r'user@cgos\s*:',s))
+                          visible=observe('guest-console',lambda s: prompt(s) or 'cgos login:' in s,150)
+                          if not prompt(visible):
+                              enter('user')
+                              time.sleep(1)
+                              enter('live')
+                              observe('guest-session',prompt,30)
+                          enter("sudo sh -c 'mount -o ro /dev/vda /mnt && sh /mnt/check.sh >/dev/ttyS0 2>&1'")
+                          deadline=time.monotonic()+100
+                          while time.monotonic()<deadline:
+                              evidence=serial.read_text(errors='replace') if serial.exists() else ''
+                              if 'CGOS_VM_EXIT=' in evidence: break
+                              if proc.poll() is not None: raise RuntimeError('QEMU exited during guest checks')
+                              time.sleep(1)
+                          else:
+                              screenshot('acceptance-timeout')
+                              raise RuntimeError('guest acceptance timed out')
+                          if f'M1_VM_PASS {mode}' not in evidence or 'CGOS_VM_EXIT=0' not in evidence:
+                              raise RuntimeError('guest validation failed or incorrect firmware mode; see serial log')
+                          (out/'result.txt').write_text(f'PASS {mode}\n')
+              except Exception as exc:
+                  (out/'result.txt').write_text(f'FAIL {mode}: {exc}\n')
+                  raise
+              finally:
+                  if proc.poll() is None:
+                      proc.terminate()
+                      try: proc.wait(timeout=5)
+                      except subprocess.TimeoutExpired:
+                          proc.kill()
+                          proc.wait(timeout=5)
+          PY
+      - name: Publish acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cgos-m1-vm-${{ matrix.mode }}
+          path: evidence/
+          if-no-files-found: error
+  verdict:
+    if: always()
+    needs: vm
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Record overall verdict
+        env:
+          VM_RESULT: ${{ needs.vm.result }}
+        run: |
+          if test "$VM_RESULT" = success; then
+            echo 'PASS: BIOS and UEFI guest acceptance' > verdict.txt
+          else
+            echo "FAIL: BIOS and UEFI acceptance not established ($VM_RESULT)" > verdict.txt
+          fi
+          cat verdict.txt >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cgos-m1-vm-verdict
+          path: verdict.txt
+      - name: Enforce verdict
+        env:
+          VM_RESULT: ${{ needs.vm.result }}
+        run: test "$VM_RESULT" = success
