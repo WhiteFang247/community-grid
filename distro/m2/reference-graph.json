@@ -1,0 +1,57 @@
+{
+  "id": "m2-reference",
+  "owner": "local",
+  "version": 1,
+  "timeout": 60,
+  "units": {
+    "normalize": {
+      "op": "text.normalize",
+      "input_type": "text",
+      "output_type": "text",
+      "nodes": [
+        "A"
+      ],
+      "depends": [],
+      "value": "  seed   library ",
+      "cpu": 1,
+      "ram_mib": 128,
+      "timeout": 15,
+      "attempts": 2,
+      "side_effects": "none"
+    },
+    "hash": {
+      "op": "text.sha256",
+      "input_type": "text",
+      "output_type": "text",
+      "nodes": [
+        "B"
+      ],
+      "depends": [
+        "normalize"
+      ],
+      "from": "normalize",
+      "cpu": 1,
+      "ram_mib": 128,
+      "timeout": 15,
+      "attempts": 2,
+      "side_effects": "none"
+    },
+    "final": {
+      "op": "text.sha256",
+      "input_type": "text",
+      "output_type": "text",
+      "nodes": [
+        "A"
+      ],
+      "depends": [
+        "hash"
+      ],
+      "from": "hash",
+      "cpu": 1,
+      "ram_mib": 128,
+      "timeout": 15,
+      "attempts": 2,
+      "side_effects": "none"
+    }
+  }
+}

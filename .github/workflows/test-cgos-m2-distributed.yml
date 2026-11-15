@@ -1,0 +1,36 @@
+name: CGOS M2 distributed graph integration
+on:
+  push:
+    branches: ['cgos/0.1-m2-distributed-graph']
+permissions:
+  contents: read
+jobs:
+  integration:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check exact source and run the complete runtime suite
+        env:
+          PYTHONPATH: runtime
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          git rev-parse HEAD > evidence/source-commit.txt
+          sha256sum distro/m2/reference-graph.json > evidence/reference-input.sha256
+          python3 -B -m unittest discover -s runtime/tests -v 2>&1 | tee evidence/linux-tests.txt
+      - name: Test isolated SSH workers and cross-worker artifacts
+        run: |
+          set -euo pipefail
+          test -x /usr/sbin/sshd || { sudo apt-get update && sudo apt-get install -y openssh-server; }
+          bash -n runtime/tests/integration/enrollment-openssh.sh
+          timeout 110 bash runtime/tests/integration/enrollment-openssh.sh
+          (cd evidence && sha256sum *.txt *.log > SHA256SUMS)
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cgos-m2-distributed-graph-evidence
+          path: evidence/
+          if-no-files-found: error

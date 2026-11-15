@@ -252,6 +252,8 @@ class GraphRuntime:
                 return False
             db.execute("INSERT OR IGNORE INTO artifacts VALUES (?,?)", (checksum, data))
             self._artifact(db, checksum)
+            if self.boot_id and db.execute("SELECT data FROM artifacts WHERE hash=?", (checksum,)).fetchone()[0] != data:
+                raise ValueError("Artifact digest collision")
             record.update(status="completed", result={"attempt": attempt, "sha256": checksum,
                                                        "size": len(data), "type": TYPES[expected]})
             record["history"][-1]["outcome"] = "completed"
@@ -310,8 +312,14 @@ class GraphRuntime:
                 if self.boot_id and deadline <= assigned_at:
                     record["status"] = "timed-out"
                     continue
-                value = (self._artifact(db, state["units"][unit["from"]]["result"]["sha256"])
-                         if "from" in unit else unit["value"])
+                try:
+                    value = (self._artifact(db, state["units"][unit["from"]]["result"]["sha256"])
+                             if "from" in unit else unit["value"])
+                except ValueError:
+                    if not self.boot_id:
+                        raise
+                    record.update(status="failed", reason="Missing or invalid dependency artifact")
+                    continue
                 for field in ("acknowledged", "acknowledged_at", "started_at", "finished_at", "cleanup_pending"):
                     record.pop(field, None)
                 record.update(status="assigned", node=node, attempt=attempt, deadline=deadline, input=value,

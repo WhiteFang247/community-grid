@@ -1,5 +1,6 @@
 """CGOS local graph service and console."""
 import argparse
+from contextlib import contextmanager
 from contextlib import closing
 import json
 import logging
@@ -90,10 +91,15 @@ class Runtime:
             logging.info("%s", json.dumps({"event": "graph_admitted", "graph": identity}))
             return {"id": identity}
         identity = request["id"]
+        if action == "graph-cancel" and self.registry is not None:
+            self.graphs.cancel(identity, "local")
+            return {"id": identity}
         if action == "graph-status":
             state = self.graphs.status(identity, "local")
-            return {name: {key: value for key, value in unit.items()
-                           if key in ("status", "attempt", "result", "deadline")}
+            keys = {"status", "attempt", "result", "deadline"}
+            if self.registry is not None:
+                keys.add("node")
+            return {name: {key: value for key, value in unit.items() if key in keys}
                     for name, unit in state["units"].items()}
         if action == "result":
             unit = request["unit"]
@@ -142,6 +148,17 @@ def exchange(path, request):
     return response["ok"]
 
 
+@contextmanager
+def coordinator_owner(state, distributed):
+    if not distributed:
+        yield
+        return
+    import fcntl
+    with (state / "distributed-coordinator.lock").open("ab") as owner:
+        fcntl.flock(owner, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        yield
+
+
 def serve(path, state, enrollment=None):
     stopping = False
 
@@ -153,27 +170,33 @@ def serve(path, state, enrollment=None):
         signal.signal(sig, stop)
     os.umask(0o077)
     state.mkdir(parents=True, exist_ok=True)
-    registry = None
-    if enrollment is not None:
-        from .enrollment import Registry
-        registry = Registry(enrollment, state)
-    try:
-        runtime = Runtime(state, registry)
-        with socketserver.UnixStreamServer(path, Handler) as server:
-            try:
-                os.chmod(path, 0o660)
-                server.runtime = runtime
-                server.timeout = 0.1
-                logging.info('{"event":"service_ready"}')
-                while not stopping:
-                    runtime.tick()
-                    server.handle_request()
-            finally:
-                Path(path).unlink(missing_ok=True)
-                logging.info('{"event":"service_stopped"}')
-    finally:
-        if registry is not None:
-            registry.close()
+    with coordinator_owner(state, enrollment is not None):
+        registry = None
+        if enrollment is not None:
+            from .enrollment import Registry
+            registry = Registry(enrollment, state)
+        try:
+            _serve_loop(path, state, registry, lambda: stopping)
+        finally:
+            if registry is not None:
+                registry.close()
+
+
+def _serve_loop(path, state, registry, stopping):
+    runtime = Runtime(state, registry)
+    with socketserver.UnixStreamServer(path, Handler) as server:
+        try:
+            os.chmod(path, 0o660)
+            server.runtime = runtime
+            server.timeout = 0.1
+            logging.info('{"event":"service_ready"}')
+            while not stopping():
+                runtime.tick()
+                server.handle_request()
+        finally:
+            Path(path).unlink(missing_ok=True)
+            logging.info('{"event":"service_stopped"}')
+
 
 
 def main():
@@ -188,6 +211,7 @@ def main():
     graph = commands.add_parser("graph").add_subparsers(dest="operation", required=True)
     graph.add_parser("submit").add_argument("file", type=Path)
     graph.add_parser("status").add_argument("id")
+    graph.add_parser("cancel").add_argument("id")
     result = graph.add_parser("result")
     result.add_argument("id")
     result.add_argument("unit")
@@ -199,7 +223,8 @@ def main():
     request = {"action": args.action}
     try:
         if args.action == "graph":
-            request["action"] = "graph-status" if args.operation == "status" else args.operation
+            request["action"] = {"status": "graph-status", "cancel": "graph-cancel"}.get(
+                args.operation, args.operation)
             if args.operation == "submit":
                 with args.file.open("rb") as source:
                     request["graph"] = json.loads(source.read(LIMIT + 1))
