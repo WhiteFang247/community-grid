@@ -45,6 +45,17 @@ def _gpu_devices():
     return [{"name": name, "backend": "vulkan", "verified_for_llm": False} for name in devices]
 
 
+def _cpu_model():
+    try:
+        for line in Path("/proc/cpuinfo").read_text().splitlines():
+            key, _, value = line.partition(":")
+            if key.strip() == "model name" and value.strip():
+                return value.strip()
+    except OSError:
+        pass
+    return platform.processor() or platform.machine()
+
+
 def discover():
     return {
         "schema_version": 1,
@@ -52,7 +63,7 @@ def discover():
         "os": platform.system(),
         "os_release": platform.release(),
         "architecture": platform.machine(),
-        "cpu": platform.processor() or platform.machine(),
+        "cpu": _cpu_model(),
         "logical_cpus": os.cpu_count(),
         "memory_total_bytes": _mem_total_bytes(),
         "memory_available_bytes": _mem_available_bytes(),

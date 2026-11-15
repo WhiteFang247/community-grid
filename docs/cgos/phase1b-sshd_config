@@ -1,0 +1,17 @@
+Port 22227
+ListenAddress 127.0.0.1
+HostKey /dev/shm/cgos-phase1b/host_ed25519
+PidFile /dev/shm/cgos-phase1b/sshd.pid
+AuthorizedKeysFile /dev/shm/cgos-phase1b/authorized_keys
+AllowUsers cgos-exp
+AuthenticationMethods publickey
+PubkeyAuthentication yes
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitRootLogin no
+DisableForwarding yes
+PermitTTY no
+PermitUserRC no
+PermitUserEnvironment no
+ForceCommand /usr/bin/python3 -I /dev/shm/cgos-phase1b/relay.py
+LogLevel VERBOSE
