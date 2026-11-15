@@ -229,7 +229,8 @@ class Guest:
                 raise RuntimeError("Linux kernel serial evidence missing")
             elapsed = time.monotonic() - self.start
             info = self.run("cat /proc/sys/kernel/random/boot_id", max(1, end - time.monotonic()))
-            identity, = re.findall(r"^[0-9a-f-]{36}$", info, re.M)
+            clean = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", info)
+            identity, = re.findall(r"(?<![0-9a-f-])[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}(?![0-9a-f-])", clean)
             (self.base / "boot.json").write_text(json.dumps(dict(boot_id=identity, serial_ready_s=elapsed)))
             report = self.run("install -d -m 0700 /run/cgos-test-private /run/cgos-test-private/media && mount -o ro /dev/vda /run/cgos-test-private/media && /bin/sh /run/cgos-test-private/media/setup.sh", 100)
             if f"FIRMWARE={self.mode}" not in report or f"M2_GUEST_READY_{self.role}" not in report:
