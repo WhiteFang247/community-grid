@@ -6,6 +6,7 @@ import json
 import math
 import os
 from pathlib import Path
+import platform
 import signal
 import sqlite3
 import subprocess
@@ -84,7 +85,9 @@ class Worker:
         action = request.get("action")
         if action == "probe" and set(request) == {"version", "action"}:
             return {"version": 2, "node": self.node, "worker_boot_id": self.boot_id,
-                    "cpu": 1, "slots": 1, "ram_mib": self.memory_mib, "operations": sorted(OPS)}
+                    "cpu": 1, "slots": 1, "ram_mib": self.memory_mib, "operations": sorted(OPS),
+                    "operation_versions": {operation: 1 for operation in sorted(OPS)},
+                    "backend": "cpu", "architecture": platform.machine()}
         if action not in ("submit", "status", "cancel"):
             raise ValueError("Unsupported action")
         if set(request) != ({"version", "action", "lease", "value"} if action == "submit"

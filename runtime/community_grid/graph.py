@@ -124,6 +124,36 @@ class GraphRuntime:
                     db.execute("INSERT OR REPLACE INTO scheduler_epoch VALUES (1, ?)",
                                (self.boot_id,))
 
+    def set_enrollment(self, enrollment):
+        """Fence leases transactionally when administrator trust changes."""
+        if not self.boot_id:
+            raise ValueError("Enrollment requires lease mode")
+        with closing(sqlite3.connect(self.path)) as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            self._assert_epoch(db)
+            db.execute("CREATE TABLE IF NOT EXISTS enrollment(node TEXT PRIMARY KEY, fingerprint TEXT NOT NULL)")
+            previous = dict(db.execute("SELECT node,fingerprint FROM enrollment"))
+            changed = {node for node, fingerprint in previous.items() if enrollment.get(node) != fingerprint}
+            for (raw,) in db.execute("SELECT state FROM graphs").fetchall():
+                state = json.loads(raw)
+                if state.get("coordinator_boot_id") != self.boot_id:
+                    continue
+                dirty = False
+                for name, record in state["units"].items():
+                    if record["status"] != "assigned" or record["node"] not in changed:
+                        continue
+                    self._quarantine(db, record["lease"])
+                    record["history"][-1]["outcome"] = "enrollment-revoked"
+                    limit = state["graph"]["units"][name]["attempts"]
+                    record["status"] = ("cancelled" if record.get("cancel_requested") else
+                                        "waiting" if record["lease"]["generation"] < limit
+                                        and self.clock() < state["deadline"] else "failed")
+                    dirty = True
+                if dirty:
+                    self._save(db, state)
+            db.execute("DELETE FROM enrollment")
+            db.executemany("INSERT INTO enrollment VALUES (?,?)", enrollment.items())
+
     def _assert_epoch(self, db):
         if self.boot_id and db.execute("SELECT boot_id FROM scheduler_epoch").fetchone() != (self.boot_id,):
             raise RuntimeError("Coordinator boot identity is fenced")
@@ -231,7 +261,7 @@ class GraphRuntime:
     def tick(self, graph_id, owner):
         state = self.status(graph_id, owner)
         if self.boot_id:
-            self._reconcile_quarantine()
+            self.reconcile_quarantine()
         for name, record in state["units"].items():
             if record["status"] == "assigned" or record.get("cleanup_pending"):
                 if self.boot_id:
@@ -368,7 +398,7 @@ class GraphRuntime:
         except (ValueError, TypeError, KeyError):
             self._finish_lease(graph_id, owner, name, lease, "failed", quarantine=True)
 
-    def _reconcile_quarantine(self):
+    def reconcile_quarantine(self):
         with closing(sqlite3.connect(self.path)) as db:
             self._assert_epoch(db)
             rows = db.execute("SELECT attempt, node, lease FROM lease_quarantine").fetchall()

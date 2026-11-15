@@ -116,7 +116,7 @@ class PhysicalNode:
         self._call("cancel", attempt)
 
 
-def process_transport(argv):
+def process_transport(argv, *, timeout=5):
     def exchange(request):
         payload = encode(request)
         if len(payload) > LIMIT:
@@ -130,7 +130,7 @@ def process_transport(argv):
                                       stderr=subprocess.DEVNULL) as child:
                     reader = Thread(target=lambda: output.append(child.stdout.read(LIMIT + 1)))
                     reader.start()
-                    reader.join(timeout=5)
+                    reader.join(timeout=timeout)
                     if reader.is_alive():
                         child.kill()
                         reader.join()
@@ -153,17 +153,23 @@ def process_transport(argv):
     return exchange
 
 
-def ssh_transport(address, user, identity, known_hosts, port=22227):
+def ssh_transport(address, user, identity, known_hosts, port=22227, *, enrolled=False):
     address = str(ipaddress.IPv4Address(address))
     if not user or not user.isascii() or not user.replace("-", "").replace("_", "").isalnum():
         raise ValueError("Invalid SSH account")
     pin = Path(known_hosts).resolve(strict=True).as_posix()
+    options = []
+    if enrolled:
+        for setting in ("HostKeyAlgorithms=ssh-ed25519", "PreferredAuthentications=publickey",
+                        "ForwardAgent=no", "ForwardX11=no", "RequestTTY=no",
+                        "PermitLocalCommand=no", "ControlMaster=no", "ProxyCommand=none"):
+            options.extend(("-o", setting))
     return process_transport([
         "ssh", "-F", os.devnull, "-T", "-p", str(port), "-i", str(Path(identity).resolve(strict=True)),
         "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=yes",
         "-o", "UpdateHostKeys=no", "-o", "ClearAllForwardings=yes", "-o", "ConnectTimeout=3",
         "-o", f'UserKnownHostsFile="{pin}"', "-o", f"GlobalKnownHostsFile={os.devnull}",
-        f"{user}@{address}",
+        *options, f"{user}@{address}",
     ])
 
 

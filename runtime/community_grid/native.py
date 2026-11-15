@@ -19,11 +19,22 @@ MAX_ACTIVE = 16
 
 
 class Runtime:
-    def __init__(self, state):
-        self.path = state / "graphs.db"
-        worker = state / "attempts.db"
-        self.node = PhysicalNode(lambda request: handle(worker, request))
-        self.graphs = GraphRuntime(self.path, {"local": self.node})
+    def __init__(self, state, registry=None, *, boot_id=None):
+        self.registry = registry
+        if registry is None:
+            self.path = state / "graphs.db"
+            worker = state / "attempts.db"
+            self.node = PhysicalNode(lambda request: handle(worker, request))
+            self.graphs = GraphRuntime(self.path, {"local": self.node})
+        else:
+            self.path = state / "distributed-graphs.db"
+            boot_id = boot_id or Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+            self.graphs = GraphRuntime(self.path, registry.peers, coordinator_boot_id=boot_id)
+            registry.load(self.graphs)
+
+    def close(self):
+        if self.registry is not None:
+            self.registry.close()
 
     def active(self):
         with closing(sqlite3.connect(self.path)) as db:
@@ -44,7 +55,12 @@ class Runtime:
                           if line.startswith("MemTotal:")), None) if memory.exists() else None
             return {"architecture": platform.machine(), "kernel": platform.release(),
                     "logical_cpus": os.cpu_count(), "processor": model or None, "memory_bytes": total}
+        if action == "reload-nodes" and self.registry is not None:
+            self.registry.load(self.graphs)
+            return self.request({"action": "nodes"})
         if action == "nodes":
+            if self.registry is not None:
+                return {node: peer.describe() for node, peer in self.registry.peers.items()}
             return {"local": self.node.transport({"action": "probe"}), "remote_enrollment": "unsupported"}
         if action in ("status", "diagnostics"):
             result = {"service": "ready", "active_graphs": sum(1 for _ in self.active())}
@@ -56,10 +72,18 @@ class Runtime:
             graph = request["graph"]
             if graph.get("owner") != "local":
                 raise ValueError("Graph owner must be local")
-            operations = self.request({"action": "nodes"})["local"]["operations"]
-            for unit in graph["units"].values():
-                if unit["nodes"] != ["local"] or unit["op"] not in operations or not self.node.eligible(unit):
-                    raise ValueError("Unsupported local placement or resource request")
+            if self.registry is None:
+                operations = self.request({"action": "nodes"})["local"]["operations"]
+                for unit in graph["units"].values():
+                    if unit["nodes"] != ["local"] or unit["op"] not in operations or not self.node.eligible(unit):
+                        raise ValueError("Unsupported local placement or resource request")
+            else:
+                for unit in graph["units"].values():
+                    for node in unit["nodes"]:
+                        peer = self.registry.peers.get(node)
+                        if (peer is None or unit["op"] not in peer.policy["operations"]
+                                or unit["cpu"] != 1 or unit["ram_mib"] > peer.policy["memory_mib"]):
+                            raise ValueError("Unknown worker or request outside enrollment policy")
             if sum(1 for _ in self.active()) >= MAX_ACTIVE:
                 raise ValueError("Active graph limit reached")
             identity = self.graphs.submit(graph, "local")
@@ -79,7 +103,12 @@ class Runtime:
         raise ValueError("Unsupported operation")
 
     def tick(self):
-        for graph in list(self.active()):
+        if self.registry is not None:
+            self.registry.tick()
+        active = list(self.active())
+        if self.registry is not None and not active:
+            self.graphs.reconcile_quarantine()
+        for graph in active:
             self.graphs.tick(graph["id"], graph["owner"])
 
 
@@ -113,7 +142,7 @@ def exchange(path, request):
     return response["ok"]
 
 
-def serve(path, state):
+def serve(path, state, enrollment=None):
     stopping = False
 
     def stop(*_):
@@ -124,29 +153,38 @@ def serve(path, state):
         signal.signal(sig, stop)
     os.umask(0o077)
     state.mkdir(parents=True, exist_ok=True)
-    runtime = Runtime(state)
-    with socketserver.UnixStreamServer(path, Handler) as server:
-        try:
-            os.chmod(path, 0o660)
-            server.runtime = runtime
-            server.timeout = 0.1
-            logging.info('{"event":"service_ready"}')
-            while not stopping:
-                runtime.tick()
-                server.handle_request()
-        finally:
-            Path(path).unlink(missing_ok=True)
-            logging.info('{"event":"service_stopped"}')
+    registry = None
+    if enrollment is not None:
+        from .enrollment import Registry
+        registry = Registry(enrollment, state)
+    try:
+        runtime = Runtime(state, registry)
+        with socketserver.UnixStreamServer(path, Handler) as server:
+            try:
+                os.chmod(path, 0o660)
+                server.runtime = runtime
+                server.timeout = 0.1
+                logging.info('{"event":"service_ready"}')
+                while not stopping:
+                    runtime.tick()
+                    server.handle_request()
+            finally:
+                Path(path).unlink(missing_ok=True)
+                logging.info('{"event":"service_stopped"}')
+    finally:
+        if registry is not None:
+            registry.close()
 
 
 def main():
     parser = argparse.ArgumentParser(prog="cgos")
     parser.add_argument("--socket", default=SOCKET)
     commands = parser.add_subparsers(dest="action", required=True)
-    for action in ("status", "hardware", "nodes", "diagnostics"):
+    for action in ("status", "hardware", "nodes", "diagnostics", "reload-nodes"):
         commands.add_parser(action)
     daemon = commands.add_parser("serve")
     daemon.add_argument("--state", type=Path, required=True)
+    daemon.add_argument("--enrollment", type=Path)
     graph = commands.add_parser("graph").add_subparsers(dest="operation", required=True)
     graph.add_parser("submit").add_argument("file", type=Path)
     graph.add_parser("status").add_argument("id")
@@ -156,7 +194,7 @@ def main():
     args = parser.parse_args()
     if args.action == "serve":
         logging.basicConfig(level=logging.INFO, format="%(message)s")
-        serve(args.socket, args.state)
+        serve(args.socket, args.state, args.enrollment)
         return
     request = {"action": args.action}
     try:
