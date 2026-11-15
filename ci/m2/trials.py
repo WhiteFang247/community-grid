@@ -61,7 +61,7 @@ def verified(client, identity, node_check):
         if node_check:
             assert item["node"] == {"normalize": "A", "hash": "B", "final": "A"}[name]
         values[name] = reply
-    return {"status": status, "results": values}
+    return {"graph_status": status, "results": values}
 
 
 def ordinary(mode, identity):
