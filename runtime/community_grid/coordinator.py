@@ -15,6 +15,7 @@ import uuid
 
 from .grid_relay import request
 from .inference import BACKEND_REVISION, MODEL_SHA256
+from .jobs import PROMPT_LIMIT
 
 TERMINAL = {"completed", "failed", "cancelled", "timed-out"}
 MIN_MEMORY = 2 * 1024**3
@@ -82,8 +83,8 @@ class Coordinator:
     def submit(self, prompt, *, approved=False):
         if not approved:
             raise PermissionError("Operator approval required for submission")
-        if not isinstance(prompt, str) or not prompt.strip() or len(prompt.encode()) > 512:
-            raise ValueError("Provide 1–512 UTF-8 bytes of prompt text")
+        if not isinstance(prompt, str) or not prompt.strip() or len(prompt.encode()) > PROMPT_LIMIT:
+            raise ValueError(f"Provide 1–{PROMPT_LIMIT} UTF-8 bytes of prompt text")
         job_id = str(uuid.uuid4())
         self.jobs[job_id] = {"id": job_id, "prompt": prompt, "status": "queued",
                              "submitted_ns": time.time_ns()}

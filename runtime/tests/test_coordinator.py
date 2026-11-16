@@ -16,6 +16,19 @@ from community_grid.worker import Worker
 
 
 class CoordinatorTests(unittest.TestCase):
+    def test_bounded_prompt_acceptance_matches_local_queue(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            coordinator = Coordinator(root / "state.json")
+            queue = JobQueue(str(root / "jobs.sqlite3"))
+            prompt = "x" * 4096
+            coordinator.submit(prompt, approved=True)
+            queue.submit_inference(prompt)
+            with self.assertRaises(ValueError):
+                coordinator.submit(prompt + "x", approved=True)
+            with self.assertRaises(ValueError):
+                queue.submit_inference(prompt + "x")
+
     def test_relay_rejects_paths_methods_and_extra_fields_before_http(self):
         cases = [
             ("GET", "/api/worker?x=1", None),

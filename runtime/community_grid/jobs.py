@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 ALLOWED = {"hardware.discover", "model.recommend", "system.health"}
+PROMPT_LIMIT = 4096
 
 class JobQueue:
     def __init__(self, path: str):
@@ -39,8 +40,8 @@ class JobQueue:
         return job_id
 
     def submit_inference(self, prompt, job_id=None):
-        if not isinstance(prompt, str) or not prompt.strip() or len(prompt.encode("utf-8")) > 512:
-            raise ValueError("Provide a nonempty prompt of at most 512 UTF-8 bytes")
+        if not isinstance(prompt, str) or not prompt.strip() or len(prompt.encode("utf-8")) > PROMPT_LIMIT:
+            raise ValueError(f"Provide a nonempty prompt of at most {PROMPT_LIMIT} UTF-8 bytes")
         job_id = str(uuid.UUID(job_id)) if job_id is not None else str(uuid.uuid4())
         with closing(self._connect()) as db, db:
             db.execute("BEGIN IMMEDIATE")

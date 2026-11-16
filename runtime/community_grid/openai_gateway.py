@@ -10,11 +10,12 @@ import time
 
 from .coordinator import Coordinator, TERMINAL, ssh_transport
 from .inference import TOKEN_LIMIT
+from .jobs import PROMPT_LIMIT
 
 
 MODEL_ID = "community-grid-qwen2.5-1.5b-instruct-q4_k_m"
-MAX_BODY = 8192
-MAX_PROMPT = 512
+MAX_BODY = 16384
+MAX_PROMPT = PROMPT_LIMIT
 MAX_MESSAGES = 8
 SPECIAL_TOKENS = ("<|im_start|>", "<|im_end|>", "<|endoftext|>")
 
@@ -77,7 +78,7 @@ def chat_prompt(data):
         chunks.append(f"<|im_start|>{role}\n{content}<|im_end|>\n")
     prompt = "".join(chunks) + "<|im_start|>assistant\n"
     if len(prompt.encode("utf-8")) > MAX_PROMPT:
-        raise GatewayError(400, "Formatted messages exceed 512 UTF-8 bytes",
+        raise GatewayError(400, f"Formatted messages exceed {MAX_PROMPT} UTF-8 bytes",
                            "context_too_long", "messages")
     return prompt
 
@@ -204,7 +205,7 @@ def make_handler(gateway):
                                        "unsupported_media_type")
                 raw_length = self.headers.get("Content-Length")
                 if raw_length is None or not raw_length.isdecimal() or not 0 < int(raw_length) <= MAX_BODY:
-                    raise GatewayError(400, "Expected a JSON body of at most 8192 bytes",
+                    raise GatewayError(400, f"Expected a JSON body of at most {MAX_BODY} bytes",
                                        "invalid_request")
                 raw = self.rfile.read(int(raw_length))
                 try:

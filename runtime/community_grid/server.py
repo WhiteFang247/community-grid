@@ -122,7 +122,7 @@ def make_handler(queue: JobQueue, worker=None, token=None, limits=None):
                 return self.reply(404, b'{"error":"not found"}')
             try:
                 size = int(self.headers.get("Content-Length", "0"))
-                if not 0 < size <= 4096 or self.headers.get_content_type() != "application/json":
+                if not 0 < size <= 16384 or self.headers.get_content_type() != "application/json":
                     raise ValueError
                 self.connection.settimeout(5)
                 data = json.loads(self.rfile.read(size))
@@ -132,7 +132,7 @@ def make_handler(queue: JobQueue, worker=None, token=None, limits=None):
                     raise ValueError
                 job_id = queue.submit_inference(data["prompt"], data.get("id"))
             except (ValueError, TimeoutError, RecursionError):
-                return self.reply(400, b'{"error":"expected a JSON prompt of at most 512 UTF-8 bytes"}')
+                return self.reply(400, b'{"error":"expected a JSON prompt of at most 4096 UTF-8 bytes"}')
             except OverflowError:
                 return self.reply(429, b'{"error":"inference queue full"}')
             return self.reply(202, json.dumps({"id": job_id, "status": queue.get(job_id)["status"]}).encode())

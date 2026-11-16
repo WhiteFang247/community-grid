@@ -33,8 +33,8 @@ def main():
     # Fixed command and operator-defined token file. Requests travel on stdin.
     port = int(sys.argv[1])
     token = read_private_token(sys.argv[2])
-    raw = sys.stdin.buffer.read(8193)
-    if len(raw) > 8192:
+    raw = sys.stdin.buffer.read(16385)
+    if len(raw) > 16384:
         raise ValueError("Request too large")
     data = json.loads(raw)
     if not isinstance(data, dict) or set(data) != {"method", "path", "body"}:

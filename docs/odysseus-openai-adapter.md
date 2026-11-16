@@ -26,25 +26,43 @@ and concurrent requests. The worker runs deterministic inference, limited to
 fixed worker setting. Odysseus's local `session_id` and `cache_prompt` hints
 are accepted but do not create cross-job KV cache affinity.
 
-The current worker/coordinator limit is 512 UTF-8 bytes of formatted prompt,
-including ChatML roles. Odysseus's normal agent prompt previously measured
-about 833 model tokens, so an actual Odysseus conversation may exceed the
-current limit. Raising it requires coordinated changes and a separately
-approved Dell service deployment, plus a context-window check. This adapter
-does not silently discard Odysseus instructions to fit the limit.
+The approved source limit is 4,096 UTF-8 bytes of formatted prompt, including
+ChatML roles, with a 2,048-token llama.cpp context and unchanged 64-token output
+limit. This requires coordinated Dell deployment; source changes alone do not
+change a running worker. The adapter does not silently discard Odysseus
+instructions to fit the limit. If the actual prompt or context exceeds these
+limits, stop for review rather than raising them automatically.
 
 On 2026-11-16, the installed isolated Odysseus checkout was found at
 `C:\Users\joris\Documents\Codex\2026-11-06\lets\work\odysseus-lenovo-stage8d`,
 from `odysseus-dev/odysseus` at commit `934d23c0be29c9721385f34565c0ae2cbd60da04`.
 Its data has an existing `Community Grid Distributed AI` provider at
-`http://127.0.0.1:8975/v1`. It was preserved. The app could not start because
-Windows Smart App Control blocked a compiled dependency in its Python virtual
-environment (`sqlalchemy.sql._util_cy`). No new provider or Odysseus chat has
-been claimed. Do not turn off Smart App Control as a workaround; use an
-approved, trusted Odysseus runtime before continuing the admin-API setup.
+`http://127.0.0.1:8975/v1`. It was preserved. Windows Smart App Control blocked
+SQLAlchemy 2.1.8's unsigned `_cache_key_cy.cp314-win_amd64.pyd` from its
+virtual environment. The PyPI wheel's published SHA-256 and the `.pyd` hash
+matched a fresh download. SQLAlchemy's documented pure-Python source option
+was used as an isolated import overlay from the SHA-256-verified 2.1.8 source
+archive, leaving the original virtual environment and data intact. No Windows
+security setting was changed. WSL was absent and was not installed.
 
-Validation: the Lenovo API completed job
+The local Odysseus admin API added `Community Grid Dell Worker` as a second
+provider at `http://127.0.0.1:8787/v1`, with tools disabled, the exact model
+ID pinned, and admin-only visibility. An actual Odysseus `/api/chat` request
+from session `7698137e-000d-4b11-a738-03e20f2d3d6a` returned "Two plus two
+is four." Coordinator job `f2c13b2b-c17c-4eec-8317-995d3c67aaac` and an
+independent authenticated Dell relay read matched the completed result and
+7 output tokens. The Dell recorded 327 prompt tokens and 1,260,960 KiB peak
+process RSS. This validates one remote worker request through Odysseus, not
+distributed model execution.
+
+The Lenovo user Startup folder launches a Python supervisor from this task's
+`outputs` directory. It starts the API only if port 8787 is free, refuses to
+replace an unrecognized listener, and restarts its child after exit. The API
+remains on loopback. Stopping the prior Codex-owned API process caused the
+supervisor to launch the updated adapter; the live API then accepted the
+Odysseus request. This does not establish recovery after a Windows reboot.
+
+Earlier validation: the Lenovo API completed job
 `7fe48018-1fec-434a-b27a-9936e969ff48` with `Two plus two equals four.`;
 the authenticated Dell relay independently returned the same completed job,
-7 output tokens, and matching text. This validates one remote-worker inference
-request, not distributed model execution or Odysseus integration.
+7 output tokens, and matching text.

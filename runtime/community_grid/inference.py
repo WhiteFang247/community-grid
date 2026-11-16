@@ -22,7 +22,7 @@ PROMPT = (
     "Use clear practical examples. Answer:\n"
 )
 TOKEN_LIMIT = 64
-CONTEXT = 1024
+CONTEXT = 2048
 
 
 def verified_digest(path, expected=None):

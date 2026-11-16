@@ -103,8 +103,10 @@ class OpenAIAdapterTests(unittest.TestCase):
         self.assertIn("data: [DONE]", body)
 
     def test_chat_prompt_limit_and_role_validation(self):
+        self.assertIn("x" * 4000, chat_prompt({"model": MODEL_ID, "messages": [
+            {"role": "user", "content": "x" * 4000}]}))
         with self.assertRaises(GatewayError) as large:
-            chat_prompt({"model": MODEL_ID, "messages": [{"role": "user", "content": "x" * 500}]})
+            chat_prompt({"model": MODEL_ID, "messages": [{"role": "user", "content": "x" * 4096}]})
         self.assertEqual(large.exception.code, "context_too_long")
         with self.assertRaises(GatewayError) as role:
             chat_prompt({"model": MODEL_ID, "messages": [{"role": "tool", "content": "text"}]})
