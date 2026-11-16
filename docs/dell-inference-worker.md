@@ -21,6 +21,14 @@ The `cgos-infer` account has a single authorized key restricted to the Lenovo so
 
 The Lenovo ran one request through the existing coordinator, pinned SSH connection, and relay while the new code ran temporarily as `cgos-admin`. Job `a94c1ac0-fcac-4c6f-8416-d39024ca3077` completed on the Dell with the answer beginning "Two plus two is four." The Dell SQLite row independently recorded the same UUID, `inference` kind, and `completed` status; `integrity_check` returned `ok`. The single request generated 64 tokens in 8.82 seconds end to end. The Dell listener was `127.0.0.1:8767`, and it was closed after the smoke. The temporary token was removed. This verifies one distributed inference request using the existing backend. It does not yet validate the privileged service installation, restricted runtime account, restart handling, or boot persistence.
 
+## Installed-service acceptance, 2026-11-16
+
+The operator ran `install-dell.sh` with sudo after review. Debian installed `git`, `git-man`, and `liberror-perl`; no packages were upgraded. `cgos-inference.service` is active and enabled, has `Restart=on-failure`, and reports zero restarts. Its HTTP listener is `127.0.0.1:8767`. The unchanged Dell Ed25519 host-key fingerprint is `SHA256:VhV4rU+jOvXXaTiklEYkpmY58ZSB204z9dkTYr1Ixec`.
+
+The Lenovo's pinned-key connection to `cgos-infer` obtained an authenticated capability response with the expected model digest and llama.cpp revision. A remote shell command was rejected, and a different Lenovo key failed authentication. An unauthenticated POST to the loopback job API returned HTTP 401. The native `cgos-admin` sudo policy still requires a password.
+
+The Lenovo coordinator submitted exactly one installed-service job, `2af324d6-da51-4a44-a7d7-8ac4f026d864`. It completed in 9.15 seconds end to end and generated 64 tokens. The text began "2 + 2 is 4." A separate authenticated relay read returned the same UUID, `inference` kind, `completed` status, and token count. The service cgroup reported nonzero CPU use after the request. This validates one inference request on the Dell through the restricted transport. Restart recovery and survival across reboot have not been exercised; no reboot was authorized.
+
 ## Coordinator configuration
 
 After installation, make a Lenovo-local JSON file, outside Git, with a single peer:
