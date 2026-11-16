@@ -36,7 +36,7 @@ def key(path):
     return " ".join(public.read_text().split()[:2]), fingerprint
 
 
-def make_media(directory, diagnostic=False, acceptance=False):
+def make_media(directory, diagnostic=False, acceptance=False, probe_ab=False):
     client = directory / "client"
     public, _ = key(client)
     key(directory / "unknown")
@@ -64,8 +64,11 @@ def make_media(directory, diagnostic=False, acceptance=False):
             shutil.copyfile(ROOT / "trials.py", folder / "trials.py")
             if diagnostic:
                 shutil.copyfile(ROOT / "diagnose-latency.py", folder / "diagnose.py")
-            if acceptance:
+            if acceptance or probe_ab:
                 shutil.copyfile(ROOT / "acceptance-observer.py", folder / "observe.py")
+            if probe_ab:
+                for name in ("probe-ab.py", "probe-spans.py"):
+                    shutil.copyfile(ROOT / name, folder / name)
             (folder / "nodes.json").write_text(json.dumps(dict(version=1, workers=entries)))
             for name, field in (("known_hosts", None), ("wrong_hosts", bad)):
                 (folder / name).write_text("".join(
@@ -266,6 +269,7 @@ def main():
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--diagnostic", action="store_true")
     modes.add_argument("--acceptance", action="store_true")
+    modes.add_argument("--probe-ab", action="store_true")
     options = parser.parse_args()
     diagnostic, acceptance = options.diagnostic, options.acceptance
     EVIDENCE.mkdir(exist_ok=True)
@@ -273,7 +277,7 @@ def main():
     accel = qemu_accel()
     with tempfile.TemporaryDirectory(prefix="cgos-m2-") as path, ExitStack() as stack:
         directory = Path(path)
-        disks = make_media(directory, diagnostic, acceptance)
+        disks = make_media(directory, diagnostic, acceptance, options.probe_ab)
         with closing(socket.socket()) as sock:
             sock.bind(("127.0.0.1", 0))
             port = sock.getsockname()[1]
@@ -295,7 +299,21 @@ def main():
                       ">/run/systemd/system/cgos-coordinator.service.d/acceptance.conf && "
                       "systemctl daemon-reload && systemctl restart cgos-coordinator.service && "
                       "timeout 25s sh -c 'until test -S /run/cgos-coordinator/api.sock; do sleep .2; done'", 45)
-            if diagnostic:
+            if options.probe_ab:
+                a.run("install -m 0644 /run/cgos-test-private/media/observe.py /run/cgos-acceptance-observe.py && "
+                      "install -m 0644 /run/cgos-test-private/media/probe-spans.py /run/cgos-probe-spans.py", 20)
+                try:
+                    a.run("PYTHONPATH=/opt/cgos/runtime timeout 410s python3 -Bu /run/cgos-test-private/media/probe-ab.py", 425)
+                finally:
+                    a.run("systemctl stop cgos-coordinator.service && "
+                          "install -d /run/systemd/system/cgos-coordinator.service.d && "
+                          "printf '%s\\n' '[Service]' 'ExecStart=' "
+                          "'ExecStart=/usr/bin/python3 /run/cgos-probe-spans.py' "
+                          ">/run/systemd/system/cgos-coordinator.service.d/acceptance.conf && "
+                          "systemctl daemon-reload && systemctl start cgos-coordinator.service && "
+                          "timeout 30s sh -c 'while systemctl is-active --quiet cgos-coordinator.service; do sleep .2; done' && "
+                          "journalctl -u cgos-coordinator.service -o short-monotonic --no-pager | grep 'M2_SPAN'", 48)
+            elif diagnostic:
                 a.run("systemctl stop cgos-coordinator.service && "
                       "PYTHONPATH=/opt/cgos/runtime timeout 70s python3 -Bu /run/cgos-test-private/media/diagnose.py", 80)
             else:
@@ -311,7 +329,7 @@ def main():
                         guest.run("cat /var/lib/cgos-coordinator/acceptance-rpc.jsonl", 90)
                     except (OSError, RuntimeError):
                         pass
-                if diagnostic or acceptance:
+                if diagnostic or acceptance or options.probe_ab:
                     try:
                         guest.run("python3 -B /run/cgos-test-private/media/audit.py; "
                                   "systemctl show cgos-worker.service cgos-worker-relay.service "
@@ -320,7 +338,8 @@ def main():
                     except (OSError, RuntimeError):
                         pass
                 try:
-                    guest.run("journalctl -u cgos -u cgos-coordinator -u cgos-worker -u cgos-worker-relay --no-pager -n 150", 30)
+                    journal = "-o short-monotonic -n 400" if options.probe_ab else "-n 150"
+                    guest.run("journalctl -u cgos -u cgos-coordinator -u cgos-worker -u cgos-worker-relay --no-pager " + journal, 30)
                 except (OSError,RuntimeError):
                     pass
 
