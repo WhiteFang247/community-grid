@@ -114,8 +114,11 @@ class Runtime:
         active = list(self.active())
         if self.registry is not None and not active:
             self.graphs.reconcile_quarantine()
+        leased = set()
         for graph in active:
-            self.graphs.tick(graph["id"], graph["owner"])
+            leased.update(self.graphs.tick(graph["id"], graph["owner"]))
+        if self.registry is not None:
+            self.registry.refresh(leased)
 
 
 class Handler(socketserver.StreamRequestHandler):

@@ -42,6 +42,10 @@ class Lab:
         for peer in self.peers.values():
             peer.poll()
 
+    def refresh(self, leased):
+        for name, peer in self.peers.items():
+            peer.refresh(leased=name in leased)
+
     def relay(self, name, request):
         if name in self.disconnected:
             raise ConnectionError("deterministic offline barrier")
@@ -137,6 +141,21 @@ class DistributedTests(unittest.TestCase):
         lab.verify_reference()
         self.assertEqual(lab.executed["B"], [lab.dropped["attempt"]])
         self.assertEqual(lab.unit("hash")["lease"], lab.dropped)
+
+    def test_consecutive_graphs_complete_without_worker_slot_leaks(self):
+        lab = self.lab
+        for i in range(4):
+            graph = dict(self.reference(), id=f"graph-{i}")
+            lab.submit(graph)
+            lab.until(lambda: lab.unit("final", graph["id"])["status"] == "completed")
+            for name in graph["units"]:
+                record = lab.unit(name, graph["id"])
+                self.assertEqual(len(record["history"]), 1)
+                self.assertFalse(lab.quarantined(record["lease"]))
+            lab.now += 3
+        attempts = lab.executed["A"] + lab.executed["B"]
+        self.assertEqual(len(attempts), 12)
+        self.assertEqual(len(set(attempts)), 12)
 
     def test_real_coordinator_process_restart_reconciles_durable_admission(self):
         subprocess.run([sys.executable, __file__, "--before-restart", str(self.root)], check=True, timeout=12)

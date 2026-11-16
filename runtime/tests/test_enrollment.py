@@ -28,6 +28,16 @@ class Inline:
         return future
 
 
+class Manual:
+    def __init__(self):
+        self.calls = []
+
+    def submit(self, callback, request):
+        future = Future()
+        self.calls.append((request, future))
+        return future
+
+
 class EnrollmentTests(unittest.TestCase):
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
@@ -66,7 +76,7 @@ class EnrollmentTests(unittest.TestCase):
     def test_clamping_protocol_offline_and_boot_identity(self):
         responses = self.responses
         peer = Peer(self.entry, lambda _: responses, Inline(), lambda: self.now)
-        peer.poll()
+        peer.refresh()
         peer.poll()
         self.assertTrue(peer.online())
         self.assertEqual(peer.capabilities["slots"], 1)
@@ -83,7 +93,7 @@ class EnrollmentTests(unittest.TestCase):
         self.now = 12
         self.assertFalse(peer.online())
         responses = dict(responses, version=1)
-        peer.poll()
+        peer.refresh()
         peer.poll()
         self.assertIsNone(peer.capabilities)
 
@@ -115,6 +125,59 @@ class EnrollmentTests(unittest.TestCase):
         self.assertFalse(runtime.graphs.publish("g", "local", "normalize",
                                                record["attempt"], b'"seed"', "unused",
                                                lease=record["lease"], worker_id="worker"))
+
+    def test_ready_lease_gets_due_probe_slot_and_recovers_idle_probes(self):
+        pool = Manual()
+        peer = Peer(self.entry, None, pool, lambda: self.now)
+        peer._probe(self.responses)
+        lease = {"worker_boot_id": "boot-a", "attempt": "a", "deadline": 15}
+        self.now = 12
+        peer.last_seen = 10
+        peer.poll()
+        peer.refresh(leased=True)
+        self.assertEqual(pool.calls, [])
+        for _ in range(25):
+            with self.assertRaises(ConnectionError):
+                peer.lease_status(lease)
+            peer.refresh(leased=True)
+        self.assertEqual([req["action"] for req, _ in pool.calls], ["status"])
+        pool.calls[0][1].set_result(dict(version=2, lease=lease, status="completed", value="ok", sha256="digest"))
+        self.now = 14.99
+        peer.poll()
+        self.assertEqual(peer.lease_status(lease)["status"], "completed")
+        self.assertEqual(peer.last_seen, self.now)
+        peer.refresh()
+        self.assertEqual(pool.calls[-1][0]["action"], "probe")
+
+    def test_cancel_waits_for_existing_probe_and_failures_do_not_refresh(self):
+        pool = Manual()
+        peer = Peer(self.entry, None, pool, lambda: self.now)
+        peer._probe(self.responses)
+        lease = {"worker_boot_id": "boot-a", "attempt": "a"}
+        self.now = 2
+        peer.refresh()
+        with self.assertRaises(ConnectionError):
+            peer.lease_cancel(lease)
+        self.assertEqual(len(pool.calls), 1)
+        pool.calls[0][1].set_exception(ConnectionError("probe failed"))
+        peer.poll()
+        self.assertEqual(peer.last_seen, 0)
+        with self.assertRaises(ConnectionError):
+            peer.lease_cancel(lease)
+        self.assertEqual(pool.calls[1][0]["action"], "cancel")
+        pool.calls[1][1].set_exception(ConnectionError("cancel reply lost"))
+        self.now = 9.5
+        peer.poll()
+        self.assertFalse(peer.online())
+        peer.refresh(leased=True)
+        self.assertEqual(pool.calls[2][0]["action"], "probe")
+        pool.calls[2][1].set_result(dict(self.responses, worker_boot_id="boot-b"))
+        peer.poll()
+        self.assertIsNone(peer.reply)
+        self.assertTrue(peer.online())
+        with self.assertRaises(ConnectionError):
+            peer.lease_status(lease)
+        self.assertEqual(len(pool.calls), 3)
 
     def test_relay_timeout_is_bounded(self):
         transport = process_transport([sys.executable, "-c", "import time; time.sleep(10)"], timeout=.25)

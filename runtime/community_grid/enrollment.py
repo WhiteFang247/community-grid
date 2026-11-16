@@ -137,6 +137,7 @@ class Peer:
         self.last_seen = self.clock()
 
     def poll(self):
+        """Harvest one finished exchange; do not take the slot from lease work."""
         if self.pending is not None and self.pending[2].done():
             action, lease, future = self.pending
             self.pending = None
@@ -160,6 +161,9 @@ class Peer:
                             raise ValueError("Invalid worker result")
                         response = dict(response, data=encode(response["value"]))
                     self.reply = (lease, response)
+                    # Worker v2 validates the complete lease against its live
+                    # boot ID before answering. Errors do not refresh liveness.
+                    self.last_seen = self.clock()
             except ConnectionError:
                 if lease is not None:
                     self.reply = (lease, ConnectionError("Worker exchange failed"))
@@ -170,6 +174,12 @@ class Peer:
                     self.reply = (lease, ValueError("Worker rejected or returned an invalid response"))
             if action == "probe":
                 self.next_probe = self.clock() + PROBE_INTERVAL
+
+    def refresh(self, *, leased=False):
+        # An online peer with an assigned lease gets the slot for lease RPCs.
+        # On loss of liveness, a probe must recover boot identity first.
+        if leased and self.online():
+            return
         if self.pending is None and self.clock() >= self.next_probe and (self.reply is None or not self.online()):
             if not self.online():
                 self.reply = None
@@ -265,6 +275,11 @@ class Registry:
         for node, peer in self.peers.items():
             if node not in self.retired:
                 peer.poll()
+
+    def refresh(self, leased):
+        for node, peer in self.peers.items():
+            if node not in self.retired:
+                peer.refresh(leased=node in leased)
 
     def close(self):
         self.pool.shutdown(wait=True, cancel_futures=True)

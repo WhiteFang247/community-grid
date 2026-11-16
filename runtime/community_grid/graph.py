@@ -338,6 +338,8 @@ class GraphRuntime:
                     record["lease"] = record["history"][-1]["lease"] = lease
                 occupied.add(node)
             self._save(db, state)
+        return {record["node"] for record in state["units"].values()
+                if record["status"] == "assigned"}
 
     def _eligible(self, node, unit):
         if self.boot_id and (not getattr(node, "boot_id", None) or unit["cpu"] != 1
