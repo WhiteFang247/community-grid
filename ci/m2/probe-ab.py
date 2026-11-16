@@ -89,5 +89,6 @@ def condition(label, observed):
 
 
 if __name__ == "__main__":
+    os.environ.update(SYSTEMD_PAGER="cat", SYSTEMD_COLORS="0", SYSTEMD_PAGERSECURE="1")
     for name in ("A1", "B1", "B2", "A2"):
         condition(name, name.startswith("B"))
