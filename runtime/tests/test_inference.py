@@ -1,6 +1,8 @@
 from contextlib import contextmanager
+from contextlib import redirect_stdout
 import hashlib
 from http.server import BaseHTTPRequestHandler, HTTPServer
+import io
 import json
 from pathlib import Path
 import tempfile
@@ -8,7 +10,7 @@ from threading import Thread
 import unittest
 from unittest.mock import patch
 
-from community_grid import hardware, inference
+from community_grid import hardware, inference, worker
 
 
 @contextmanager
@@ -36,6 +38,36 @@ def completion_server(events, requests):
 
 
 class InferenceTests(unittest.TestCase):
+    def test_context_rejection_is_typed_without_exposing_backend_text(self):
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                self.rfile.read(int(self.headers["Content-Length"]))
+                body = b'{"error":{"message":"prompt exceeds context size"}}'
+                self.send_response(400)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        with HTTPServer(("127.0.0.1", 0), Handler) as server:
+            thread = Thread(target=server.handle_request)
+            thread.start()
+            with self.assertRaises(inference.ModelContextExceeded):
+                inference.completion(server.server_port, "short prompt")
+            thread.join()
+
+    def test_inference_child_returns_only_safe_context_error_code(self):
+        output = io.StringIO()
+        version = type("Version", (), {"stdout": inference.BACKEND_REVISION.encode()})()
+        with patch("community_grid.worker.subprocess.run", return_value=version), \
+             patch("community_grid.inference.run_threads",
+                   side_effect=inference.ModelContextExceeded("private backend detail")), \
+             redirect_stdout(output):
+            worker.execute_child("backend", "model", 2, "prompt")
+        self.assertEqual(json.loads(output.getvalue()), {"error_code": "model_context_exceeded"})
+
     def test_cpu_model_is_distinct_from_architecture(self):
         with patch.object(Path, "read_text", return_value="processor: 0\nmodel name : Intel Core i5-2500\n"):
             self.assertEqual(hardware._cpu_model(), "Intel Core i5-2500")

@@ -1,15 +1,19 @@
 """Small OpenAI-compatible, loopback-only adapter for one pinned SSH inference worker."""
 
 import argparse
+from collections import deque
+import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
+import re
 import subprocess
-from threading import Lock
+from threading import Event, Lock, Thread
 import time
+import uuid
 
 from .coordinator import Coordinator, TERMINAL, ssh_transport
-from .inference import TOKEN_LIMIT
+from .inference import BACKEND_REVISION, MODEL_SHA256, TOKEN_LIMIT
 from .jobs import PROMPT_LIMIT
 
 
@@ -21,9 +25,26 @@ SPECIAL_TOKENS = ("<|im_start|>", "<|im_end|>", "<|endoftext|>")
 
 
 class GatewayError(Exception):
-    def __init__(self, status, message, code, param=None, kind="invalid_request_error"):
+    def __init__(self, status, message, code, param=None, kind="invalid_request_error", job_id=None):
         super().__init__(message)
-        self.status, self.code, self.param, self.kind = status, code, param, kind
+        self.status, self.code, self.param, self.kind, self.job_id = status, code, param, kind, job_id
+
+
+def transport_error(exc, job_id=None):
+    """Report a safe failure class without weakening OpenSSH verification."""
+    stderr = getattr(exc, "stderr", "") or ""
+    if isinstance(stderr, bytes):
+        stderr = stderr.decode(errors="replace")
+    detail = str(stderr).lower()
+    if "host key verification failed" in detail or "remote host identification has changed" in detail:
+        code, message = "host_key_verification_failed", "Dell SSH host key verification failed"
+    elif "permission denied (publickey)" in detail or "too many authentication failures" in detail:
+        code, message = "ssh_authentication_failed", "Dell SSH authentication failed"
+    elif isinstance(exc, PermissionError):
+        code, message = "worker_authentication_failed", "Dell worker relay authentication failed"
+    else:
+        code, message = "worker_unavailable", "Dell worker is unavailable"
+    return GatewayError(503, message, code, kind="api_error", job_id=job_id)
 
 
 def _unsupported(name):
@@ -116,36 +137,142 @@ class Gateway:
             raise ValueError("Coordinator state parent directory must exist")
         self.deadline_seconds = deadline_seconds
         self.lock = Lock()
+        self.failures = deque(maxlen=16)
 
-    def complete(self, prompt):
+    def note_failure(self, error):
+        self.failures.append({"at": int(time.time()), "code": error.code})
+
+    def health(self):
+        """One authenticated heartbeat; never loads the model for a health check."""
+        try:
+            coordinator = Coordinator(self.state)
+            pending = [job["id"] for job in coordinator.jobs.values()
+                       if job.get("status") not in TERMINAL]
+        except (OSError, ValueError, TypeError, KeyError):
+            return {"status": "OFFLINE", "reason": "coordinator_state_invalid",
+                    "api": True, "coordinator": False, "worker": False,
+                    "recent_failures": list(self.failures)}
+        try:
+            coordinator.enroll(self.name, self.transport, approved=True)
+            ready = coordinator.available(self.name) and not pending
+            report = coordinator.peers[self.name].capability or {}
+        except (OSError, ValueError, PermissionError, subprocess.SubprocessError) as exc:
+            error = transport_error(exc)
+            return {"status": "DEGRADED", "reason": error.code,
+                    "api": True, "coordinator": True, "worker": False,
+                    "pending_jobs": pending, "recent_failures": list(self.failures)}
+        return {"status": "HEALTHY" if ready else "DEGRADED",
+                "reason": "ready" if ready else ("worker_busy" if report.get("busy") else "worker_not_ready"),
+                "api": True, "coordinator": True, "ssh_relay": True,
+                "worker": report.get("healthy") is True,
+                "model_ready": report.get("model_sha256") == MODEL_SHA256
+                               and report.get("backend_revision") == BACKEND_REVISION,
+                "pending_jobs": pending, "recent_failures": list(self.failures)}
+
+    def job_status(self, job_id):
+        try:
+            row = Coordinator(self.state).jobs.get(str(uuid.UUID(job_id)))
+        except (OSError, ValueError, TypeError, KeyError):
+            row = None
+        if row is None:
+            raise GatewayError(404, "Unknown job", "job_not_found", "job_id")
+        return {"id": row["id"], "status": row["status"], "worker": row.get("worker"),
+                "uncertain": row["status"] not in TERMINAL,
+                "last_transport_error": row.get("last_transport_error")}
+
+    def reconcile_once(self):
+        """Resume only persisted unfinished work, under the dispatch lock."""
+        if not self.lock.acquire(blocking=False):
+            return "busy"
+        try:
+            coordinator = Coordinator(self.state)
+            if not any(job.get("status") not in TERMINAL for job in coordinator.jobs.values()):
+                return "idle"
+            try:
+                coordinator.enroll(self.name, self.transport, approved=True)
+                coordinator.tick()
+            except (OSError, ValueError, PermissionError, subprocess.SubprocessError) as exc:
+                self.note_failure(transport_error(exc))
+                return "offline"
+            return ("pending" if any(job.get("status") not in TERMINAL
+                                     for job in coordinator.jobs.values()) else "resolved")
+        finally:
+            self.lock.release()
+
+    def maintain(self, stop):
+        """Bounded background reconciliation; idle checks never load the model."""
+        delay = 5
+        while not stop.wait(delay):
+            outcome = self.reconcile_once()
+            delay = min(delay * 2, 60) if outcome == "offline" else (5 if outcome == "pending" else 15)
+
+    def complete(self, prompt, request_key=None):
         if not self.lock.acquire(blocking=False):
             raise GatewayError(429, "Worker is busy", "worker_busy", kind="rate_limit_error")
         try:
             coordinator = Coordinator(self.state)
+            previous = next((job for job in coordinator.jobs.values()
+                             if request_key and job.get("request_key") == request_key), None)
+            if previous and previous["prompt"] != prompt:
+                raise GatewayError(409, "Idempotency key was used with a different prompt",
+                                   "idempotency_conflict", kind="api_error")
+            pending = next((job for job in coordinator.jobs.values()
+                            if job.get("status") not in TERMINAL and job is not previous), None)
+            if previous and previous["status"] in TERMINAL:
+                return self._terminal(previous)
             try:
                 coordinator.enroll(self.name, self.transport, approved=True)
             except (OSError, ValueError, PermissionError, subprocess.SubprocessError) as exc:
-                raise GatewayError(503, "Dell worker is unavailable", "worker_unavailable",
-                                   kind="api_error") from exc
-            job_id = coordinator.submit(prompt, approved=True)
+                raise transport_error(exc, (previous or pending or {}).get("id")) from exc
+            if pending:
+                coordinator.tick()  # Reconcile its original ID before accepting new work.
+                pending = next((job for job in coordinator.jobs.values()
+                                if job.get("status") not in TERMINAL and job is not previous), None)
+                if pending:
+                    raise GatewayError(503, "A previous job needs reconciliation",
+                                       "reconciliation_pending", kind="api_error", job_id=pending["id"])
+            if not coordinator.available(self.name) and not previous:
+                busy = (coordinator.peers[self.name].capability or {}).get("busy") is True
+                raise GatewayError(429 if busy else 503,
+                                   "Dell worker is busy" if busy else "Dell worker is not ready",
+                                   "worker_busy" if busy else "worker_not_ready",
+                                   kind="rate_limit_error" if busy else "api_error")
+            job_id = previous["id"] if previous else coordinator.submit(
+                prompt, approved=True, request_key=request_key)
             until = time.monotonic() + self.deadline_seconds
+            delay = 0.25
             while time.monotonic() < until:
                 coordinator.tick()
                 job = coordinator.jobs[job_id]
                 if job["status"] in TERMINAL:
-                    if job["status"] != "completed" or job.get("worker") != self.name:
-                        raise GatewayError(502, "Dell worker did not complete the request",
-                                           "worker_failed", kind="api_error")
-                    samples = job.get("result", {}).get("samples")
-                    if not isinstance(samples, list) or len(samples) != 1:
-                        raise GatewayError(502, "Worker returned an invalid result",
-                                           "invalid_worker_result", kind="api_error")
-                    return job_id, chat_response(job_id, samples[0])
-                time.sleep(0.25)
-            coordinator.cancel(job_id, approved=True)
-            raise GatewayError(504, "Dell worker timed out", "worker_timeout", kind="api_error")
+                    return self._terminal(job)
+                delay = min(delay * 2, 4) if coordinator.peers[self.name].heartbeat == float("-inf") else 0.25
+                time.sleep(min(delay, max(0, until - time.monotonic())))
+            # The job may still be running on Dell. Preserve its ID for reconciliation.
+            job = coordinator.jobs[job_id]
+            job["last_timeout_ns"] = time.time_ns()
+            coordinator.save()
+            raise GatewayError(504, "Dell result is uncertain; retry with the same session or idempotency key",
+                               "worker_timeout", kind="api_error", job_id=job_id)
         finally:
             self.lock.release()
+
+    def _terminal(self, job):
+        job_id = job["id"]
+        if job["status"] == "timed-out":
+            raise GatewayError(504, "Dell worker execution timed out", "worker_timeout",
+                               kind="api_error", job_id=job_id)
+        if job["status"] != "completed" or job.get("worker") != self.name:
+            code = (job.get("result") or {}).get("code")
+            if code == "model_context_exceeded":
+                raise GatewayError(400, "Model context exceeded", code, "messages", job_id=job_id)
+            raise GatewayError(502, "Dell worker did not complete the request",
+                               "worker_internal_failure", kind="api_error", job_id=job_id)
+        samples = (job.get("result") or {}).get("samples")
+        if not isinstance(samples, list) or len(samples) != 1:
+            raise GatewayError(502, "Worker returned an invalid result",
+                               "invalid_worker_result", kind="api_error", job_id=job_id)
+        return job_id, chat_response(job_id, samples[0])
 
 
 class GatewayHTTPServer(ThreadingHTTPServer):
@@ -187,10 +314,20 @@ def make_handler(gateway):
             self.wfile.write(raw)
 
         def error_json(self, error):
+            if hasattr(gateway, "note_failure"):
+                gateway.note_failure(error)
             self.send_json(error.status, {"error": {"message": str(error), "type": error.kind,
-                                                    "param": error.param, "code": error.code}})
+                                                    "param": error.param, "code": error.code,
+                                                    "job_id": error.job_id}}, job_id=error.job_id)
 
         def do_GET(self):
+            if self.path == "/health":
+                return self.send_json(200, gateway.health())
+            if re.fullmatch(r"/v1/jobs/[a-f0-9-]{36}", self.path):
+                try:
+                    return self.send_json(200, gateway.job_status(self.path.rsplit("/", 1)[1]))
+                except GatewayError as exc:
+                    return self.error_json(exc)
             if self.path != "/v1/models":
                 return self.error_json(GatewayError(404, "Unknown endpoint", "not_found"))
             self.send_json(200, {"object": "list", "data": [{"id": MODEL_ID, "object": "model",
@@ -213,7 +350,17 @@ def make_handler(gateway):
                 except (UnicodeDecodeError, json.JSONDecodeError) as exc:
                     raise GatewayError(400, "Malformed JSON", "invalid_json") from exc
                 prompt = chat_prompt(data)
-                job_id, result = gateway.complete(prompt)
+                raw_key = self.headers.get("Idempotency-Key")
+                if raw_key is not None and not re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", raw_key):
+                    raise GatewayError(400, "Invalid Idempotency-Key", "invalid_idempotency_key",
+                                       "Idempotency-Key")
+                if raw_key is not None:
+                    request_key = hashlib.sha256(("client:" + raw_key).encode()).hexdigest()
+                elif data.get("session_id"):
+                    request_key = hashlib.sha256(("session:" + data["session_id"] + "\0" + prompt).encode()).hexdigest()
+                else:
+                    request_key = None
+                job_id, result = gateway.complete(prompt, request_key=request_key)
                 if data.get("stream", False):
                     self.send_stream(result, job_id)
                 else:
@@ -236,9 +383,16 @@ def main(argv=None):
     if not 1 <= args.port <= 65535:
         parser.error("Port must be 1–65535")
     gateway = Gateway(args.config, args.state)
+    stop = Event()
+    maintainer = Thread(target=gateway.maintain, args=(stop,), name="job-reconciler", daemon=True)
+    maintainer.start()
     with GatewayHTTPServer((args.host, args.port), make_handler(gateway)) as server:
         print(f"Community Grid OpenAI API: http://{args.host}:{args.port}/v1", flush=True)
-        server.serve_forever()
+        try:
+            server.serve_forever()
+        finally:
+            stop.set()
+            maintainer.join(timeout=2)
 
 
 if __name__ == "__main__":

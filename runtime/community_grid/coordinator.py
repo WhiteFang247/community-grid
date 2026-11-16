@@ -80,14 +80,19 @@ class Coordinator:
             and data.get("limits", {}).get("max_running") == 1
         )
 
-    def submit(self, prompt, *, approved=False):
+    def submit(self, prompt, *, approved=False, request_key=None):
         if not approved:
             raise PermissionError("Operator approval required for submission")
         if not isinstance(prompt, str) or not prompt.strip() or len(prompt.encode()) > PROMPT_LIMIT:
             raise ValueError(f"Provide 1–{PROMPT_LIMIT} UTF-8 bytes of prompt text")
+        if request_key is not None and (not isinstance(request_key, str)
+                                        or not re.fullmatch(r"[a-f0-9]{64}", request_key)):
+            raise ValueError("Invalid request key")
         job_id = str(uuid.uuid4())
         self.jobs[job_id] = {"id": job_id, "prompt": prompt, "status": "queued",
                              "submitted_ns": time.time_ns()}
+        if request_key is not None:
+            self.jobs[job_id]["request_key"] = request_key
         self.save()
         return job_id
 

@@ -25,6 +25,10 @@ TOKEN_LIMIT = 64
 CONTEXT = 2048
 
 
+class ModelContextExceeded(ValueError):
+    """The pinned backend explicitly rejected a prompt for its context size."""
+
+
 def verified_digest(path, expected=None):
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -52,6 +56,10 @@ def completion(port, prompt=PROMPT, include_text=False, api_key=None):
             headers["Authorization"] = f"Bearer {api_key}"
         connection.request("POST", "/completion", body, headers)
         with connection.getresponse() as response:
+            if response.status in (400, 413, 422):
+                detail = response.read(2048).decode("utf-8", errors="replace").lower()
+                if any(marker in detail for marker in ("context", "n_ctx", "too many tokens")):
+                    raise ModelContextExceeded("Model context exceeded")
             if response.status != 200 or response.headers.get_content_type() != "text/event-stream":
                 raise ValueError(f"Unexpected completion HTTP response ({response.status})")
             for line in response:

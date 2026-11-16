@@ -14,8 +14,9 @@ class FakeGateway:
     def __init__(self):
         self.prompts = []
 
-    def complete(self, prompt):
+    def complete(self, prompt, request_key=None):
         self.prompts.append(prompt)
+        self.request_key = request_key
         return "123e4567-e89b-12d3-a456-426614174000", {
             "id": "chatcmpl-123e4567-e89b-12d3-a456-426614174000",
             "object": "chat.completion", "created": 1, "model": MODEL_ID,
@@ -23,6 +24,12 @@ class FakeGateway:
                          "finish_reason": "stop"}],
             "usage": {"prompt_tokens": 8, "completion_tokens": 2, "total_tokens": 10},
         }
+
+    def health(self):
+        return {"status": "HEALTHY", "worker": True, "model_ready": True}
+
+    def job_status(self, job_id):
+        return {"id": job_id, "status": "completed", "uncertain": False}
 
 
 class OpenAIAdapterTests(unittest.TestCase):
@@ -56,6 +63,9 @@ class OpenAIAdapterTests(unittest.TestCase):
             connection.close()
 
     def test_models_and_nonstreaming_completion(self):
+        status, _, health = self.request("GET", "/health")
+        self.assertEqual(status, 200)
+        self.assertEqual(health["status"], "HEALTHY")
         status, _, listing = self.request("GET", "/v1/models")
         self.assertEqual(status, 200)
         self.assertEqual(listing["data"][0]["id"], MODEL_ID)
@@ -69,6 +79,8 @@ class OpenAIAdapterTests(unittest.TestCase):
         self.assertEqual(headers["X-Community-Grid-Job-ID"], "123e4567-e89b-12d3-a456-426614174000")
         self.assertEqual(completion["choices"][0]["message"], {"role": "assistant", "content": "Four."})
         self.assertEqual(completion["usage"]["total_tokens"], 10)
+        self.assertEqual(self.request("GET", "/v1/jobs/123e4567-e89b-12d3-a456-426614174000")[2]["status"],
+                         "completed")
         self.assertEqual(self.gateway.prompts, [
             "<|im_start|>system\nBe brief.<|im_end|>\n"
             "<|im_start|>user\nWhat is 2+2?<|im_end|>\n"
@@ -87,6 +99,19 @@ class OpenAIAdapterTests(unittest.TestCase):
                 self.assertIn(status, (400, 404))
                 self.assertEqual(body["error"]["code"], code)
         self.assertEqual(self.gateway.prompts, [])
+
+    def test_uncertain_job_id_is_returned_in_error_and_header(self):
+        job_id = "123e4567-e89b-12d3-a456-426614174000"
+        def uncertain(prompt, request_key=None):
+            raise GatewayError(504, "Result uncertain", "worker_timeout", kind="api_error", job_id=job_id)
+        self.gateway.complete = uncertain
+        status, headers, body = self.request("POST", "/v1/chat/completions", {
+            "model": MODEL_ID, "messages": [{"role": "user", "content": "Hello"}],
+            "session_id": "retry-this-chat",
+        })
+        self.assertEqual(status, 504)
+        self.assertEqual(headers["X-Community-Grid-Job-ID"], job_id)
+        self.assertEqual(body["error"]["job_id"], job_id)
 
     def test_odysseus_stream_with_usage_and_local_affinity_hints(self):
         status, headers, body = self.stream_request({

@@ -48,6 +48,8 @@ class Worker:
                 status, result = "cancelled", {"error": "Execution interrupted"}
             except TimeoutError:
                 status, result = "timed-out", {"error": "Execution deadline exceeded"}
+            except inference.ModelContextExceeded:
+                status, result = "failed", {"error": "Model context exceeded", "code": "model_context_exceeded"}
             except Exception:
                 status, result = "failed", {"error": "Inference backend failed"}
             self.queue.finish_inference(job_id, status, result)
@@ -98,7 +100,10 @@ class LocalLlama:
                     payload = None
             if process.returncode:
                 raise RuntimeError("Inference child exited unsuccessfully")
-            return json.loads(output)
+            result = json.loads(output)
+            if result.get("error_code") == "model_context_exceeded":
+                raise inference.ModelContextExceeded("Model context exceeded")
+            return result
         finally:
             if job:
                 job.close()
@@ -146,7 +151,11 @@ def execute_child(backend, model, threads, prompt):
                              timeout=10, check=True).stdout.decode()
     if inference.BACKEND_REVISION[:7] not in version:
         raise ValueError("Unexpected llama.cpp version")
-    print(json.dumps(inference.run_threads(backend, model, int(threads), 1, False, prompt)))
+    try:
+        result = inference.run_threads(backend, model, int(threads), 1, False, prompt)
+    except inference.ModelContextExceeded:
+        result = {"error_code": "model_context_exceeded"}
+    print(json.dumps(result))
 
 
 if __name__ == "__main__":

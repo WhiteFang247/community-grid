@@ -55,12 +55,12 @@ independent authenticated Dell relay read matched the completed result and
 process RSS. This validates one remote worker request through Odysseus, not
 distributed model execution.
 
-The Lenovo user Startup folder launches a Python supervisor from this task's
-`outputs` directory. It starts the API only if port 8787 is free, refuses to
-replace an unrecognized listener, and restarts its child after exit. The API
-remains on loopback. Stopping the prior Codex-owned API process caused the
-supervisor to launch the updated adapter; the live API then accepted the
-Odysseus request. This does not establish recovery after a Windows reboot.
+The Lenovo's limited-user **Community Grid Local AI** scheduled task launches
+the supervisor at user sign-in. It starts the API only if port 8787 is free,
+refuses to replace an unrecognized listener, and restarts its child after
+exit. The API remains on loopback. See
+[`local-ai-reliability.md`](local-ai-reliability.md) for status, logs, recovery,
+and the limits of startup validation. A full Windows reboot was not tested.
 
 Earlier validation: the Lenovo API completed job
 `7fe48018-1fec-434a-b27a-9936e969ff48` with `Two plus two equals four.`;
