@@ -1,0 +1,87 @@
+name: CGOS 0.1-M2 Task 5A single graph latency diagnostic
+on:
+  push:
+    branches: ['cgos/0.1-m2-latency-diagnostic']
+    paths: ['.github/workflows/diagnose-cgos-m2-latency.yml', 'ci/m2/**']
+permissions:
+  contents: read
+  actions: read
+jobs:
+  acceptance:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Retrieve and verify the exact build artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISO_SOURCE: '450536f87f12dd563df88ddc04274cdb0fccdf52'
+          ISO_BUILD_RUN: '43764349300'
+          BUNDLE_ID: '14182290204'
+          BUNDLE_DIGEST: '15a0f2d6c8e788be2beb1896464473c3f0bc46aa1b2893a4566347566d07f296'
+        run: |
+          set -euo pipefail
+          mkdir -p evidence iso
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$BUNDLE_ID" > evidence/iso-artifact.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$BUNDLE_ID/zip" > original.zip
+          python3 - <<'PY'
+          import hashlib,json,os,pathlib,re,zipfile
+          meta=json.loads(pathlib.Path('evidence/iso-artifact.json').read_text())
+          expected=os.environ['ISO_SOURCE']
+          assert meta['workflow_run']['head_sha']==expected
+          assert meta['workflow_run']['id']==int(os.environ['ISO_BUILD_RUN'])
+          assert meta['id']==int(os.environ['BUNDLE_ID']) and not meta['expired']
+          assert meta['name']=='cgos-0.1-m2-amd64-'+expected
+          with open('original.zip','rb') as f: digest=hashlib.file_digest(f,'sha256').hexdigest()
+          assert digest==os.environ['BUNDLE_DIGEST'].removeprefix('sha256:')
+          assert meta.get('digest') in (None,'sha256:'+digest)
+          with zipfile.ZipFile('original.zip') as z:
+              names=z.namelist()
+              assert len(names)==len(set(names))
+              assert sum(i.file_size for i in z.infolist())<700_000_000
+              assert all(re.fullmatch(r'(live-image-amd64\.hybrid\.iso|SHA256SUMS|manifest/[A-Za-z0-9_.+-]+)',n) for n in names)
+              z.extractall('iso')
+          PY
+          test "$(cat iso/manifest/source-commit.txt)" = "$ISO_SOURCE"
+          test ! -s iso/manifest/source-status.txt
+          git fetch --depth=1 origin "$ISO_SOURCE"
+          python3 - <<'PY'
+          import hashlib,os,pathlib,subprocess
+          rev=os.environ['ISO_SOURCE']
+          for line in pathlib.Path('iso/manifest/build-inputs.SHA256SUMS').read_text().splitlines():
+              expected,path=line.split('  ',1)
+              blob=subprocess.check_output(['git','show',rev+':'+path])
+              assert hashlib.sha256(blob).hexdigest()==expected,path
+          PY
+          (cd iso && sha256sum -c SHA256SUMS)
+          echo "38d4366a55e7bd788f1cf6358ced8361758bcee74a59af10ec2761ac1acb9804  iso/live-image-amd64.hybrid.iso" | sha256sum -c -
+          cp iso/SHA256SUMS evidence/ISO-SHA256SUMS
+          cp iso/manifest/source-commit.txt evidence/source-commit.txt
+      - name: Install disposable VM tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 seabios ovmf xorriso openssh-client
+      - name: Check guest script syntax
+        run: |
+          bash -n ci/m2/check-ssh.sh
+          sh -n ci/m2/setup-guest.sh
+      - name: Trace one graph in two disposable guests (not acceptance)
+        run: timeout --kill-after=15s 620s python3 -B ci/m2/boot-and-test.py --diagnostic
+      - name: Extract diagnostic trace
+        if: always()
+        run: |
+          mkdir -p evidence
+          if test -f evidence/A/command-serial.log; then
+            grep -a '^M2_DIAG_' evidence/A/command-serial.log > evidence/diagnostic.log || :
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cgos-m2-task5a-diagnostic-${{ github.sha }}
+          path: evidence/
+          if-no-files-found: error
