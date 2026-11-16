@@ -17,6 +17,10 @@ The `cgos-infer` account has a single authorized key restricted to the Lenovo so
 
 `cgos-inference.service` runs unprivileged and restarts after failure. Logs go to `journalctl -u cgos-inference.service`. The unit caps the total service at 6 GiB and four CPUs; each model job is capped at 4 GiB address space, four threads, 90 seconds, and one running slot. It is enabled for later boots after verification.
 
+## Predeployment smoke, 2026-11-16
+
+The Lenovo ran one request through the existing coordinator, pinned SSH connection, and relay while the new code ran temporarily as `cgos-admin`. Job `a94c1ac0-fcac-4c6f-8416-d39024ca3077` completed on the Dell with the answer beginning "Two plus two is four." The Dell SQLite row independently recorded the same UUID, `inference` kind, and `completed` status; `integrity_check` returned `ok`. The single request generated 64 tokens in 8.82 seconds end to end. The Dell listener was `127.0.0.1:8767`, and it was closed after the smoke. The temporary token was removed. This verifies one distributed inference request using the existing backend. It does not yet validate the privileged service installation, restricted runtime account, restart handling, or boot persistence.
+
 ## Coordinator configuration
 
 After installation, make a Lenovo-local JSON file, outside Git, with a single peer:
