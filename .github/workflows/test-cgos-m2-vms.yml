@@ -1,7 +1,7 @@
-name: Test the verified CGOS 0.1-M2 ISO in two guests
+name: CGOS M2 Task 5C full two-VM acceptance
 on:
   push:
-    branches: ['cgos/0.1-m2-two-vm-acceptance']
+    branches: ['cgos/0.1-m2-final-acceptance']
     paths: ['ci/m2/**', '.github/workflows/test-cgos-m2-vms.yml']
 permissions:
   contents: read
@@ -9,7 +9,7 @@ permissions:
 jobs:
   acceptance:
     runs-on: ubuntu-24.04
-    timeout-minutes: 32
+    timeout-minutes: 195
     permissions:
       contents: read
       actions: read
@@ -20,10 +20,10 @@ jobs:
       - name: Retrieve and verify the exact build artifact
         env:
           GH_TOKEN: ${{ github.token }}
-          ISO_SOURCE: '450536f87f12dd563df88ddc04274cdb0fccdf52'
-          ISO_BUILD_RUN: '43764349300'
-          BUNDLE_ID: '14182290204'
-          BUNDLE_DIGEST: '15a0f2d6c8e788be2beb1896464473c3f0bc46aa1b2893a4566347566d07f296'
+          ISO_SOURCE: '9ba6e97d8c9ace29953bc5d10a86ac423289c6c7'
+          ISO_BUILD_RUN: '43784636524'
+          BUNDLE_ID: '14189832475'
+          BUNDLE_DIGEST: '7a50b46fa2cd5863bac324ae0d10f063a71c0228dd855e01fdee5e5847d3903b'
         run: |
           set -euo pipefail
           mkdir -p evidence iso
@@ -59,6 +59,7 @@ jobs:
               assert hashlib.sha256(blob).hexdigest()==expected,path
           PY
           (cd iso && sha256sum -c SHA256SUMS)
+          echo "23755afcc693cf24d205d05257a027c7a9b0679eaf6e826c3734ed50edff5ead  iso/live-image-amd64.hybrid.iso" | sha256sum -c -
           cp iso/SHA256SUMS evidence/ISO-SHA256SUMS
           cp iso/manifest/source-commit.txt evidence/source-commit.txt
       - name: Install disposable VM tools
@@ -70,34 +71,18 @@ jobs:
           bash -n ci/m2/check-ssh.sh
           sh -n ci/m2/setup-guest.sh
       - name: Boot two guests and exercise the full matrix
-        run: timeout --kill-after=15s 1500s python3 -B ci/m2/boot-and-test.py
+        id: matrix
+        run: |
+          { uname -a; lscpu; cat /etc/os-release; free -m; df -h .; } > evidence/runner.txt
+          timeout --kill-after=15s 10800s python3 -B ci/m2/boot-and-test.py --acceptance
       - name: Collect trial records and verdict
         if: always()
-        run: |
-          mkdir -p evidence
-          python3 - <<'PY'
-          import json,pathlib
-          out=pathlib.Path('evidence')
-          serial=out/'A/command-serial.log'
-          log=serial.read_text(errors='replace') if serial.exists() else ''
-          trials=[json.loads(s.split(' ',1)[1]) for s in log.splitlines() if s.startswith('M2_TRIAL ')]
-          with (out/'trials.jsonl').open('w') as f:
-              for trial in trials: f.write(json.dumps(trial)+'\n')
-          verdicts=[json.loads(s.split(' ',1)[1]) for s in log.splitlines() if s.startswith('M2_VERDICT ')]
-          expected=dict(warmup=5,healthy=30,local=30,lost=20,restart=20,offline=20,cancel=20)
-          counts={name:sum(t['mode']==name for t in trials) for name in expected}
-          valid=bool(verdicts and verdicts[-1]['status']=='PASS' and counts==expected
-                     and all(t['status']=='pass' for t in trials))
-          verdict={'status':'PASS' if valid else 'NOT ACCEPTED',
-                   'completed_trial_counts':counts,'required_trial_counts':expected,
-                   'guest_verdict':verdicts[-1] if verdicts else None}
-          (out/'verdict.json').write_text(json.dumps(verdict,indent=2)+'\n')
-          print(json.dumps(verdict,indent=2))
-          if not valid: raise SystemExit(1)
-          PY
+        env:
+          MATRIX_OUTCOME: ${{ steps.matrix.outcome }}
+        run: python3 -B ci/m2/collect-acceptance.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: cgos-m2-two-vm-evidence-${{ github.sha }}
+          name: cgos-m2-task5c-acceptance-${{ github.sha }}
           path: evidence/
           if-no-files-found: error
