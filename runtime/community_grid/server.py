@@ -14,6 +14,7 @@ from .hardware import _cpu_model, _mem_available_bytes, _mem_total_bytes, discov
 from .inference import BACKEND_REVISION, MODEL_SHA256
 from .models import recommend
 from .jobs import JobQueue
+from .operator_auth import read_private_token
 
 PAGE = """<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Community Grid OS</title><style>
@@ -153,7 +154,11 @@ def main():
         if os.environ.get("COMMUNITY_GRID_ENABLE_WORKER") == "1":
             from .worker import LocalLlama, Worker
 
-            token = os.environ.pop("COMMUNITY_GRID_OPERATOR_TOKEN").encode()
+            token_file = os.environ.pop("COMMUNITY_GRID_OPERATOR_TOKEN_FILE", None)
+            if token_file and "COMMUNITY_GRID_OPERATOR_TOKEN" in os.environ:
+                raise ValueError("Configure exactly one operator token source")
+            token = (read_private_token(token_file) if token_file else
+                     os.environ.pop("COMMUNITY_GRID_OPERATOR_TOKEN")).encode()
             if len(token) < 32:
                 raise ValueError("Set a random operator token of at least 32 bytes")
             threads = int(os.environ.get("COMMUNITY_GRID_THREADS", "2"))

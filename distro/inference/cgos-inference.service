@@ -1,0 +1,43 @@
+[Unit]
+Description=Community Grid loopback inference worker
+ConditionPathExists=/etc/cgos/inference/worker.env
+ConditionPathExists=/var/lib/cgos-inference/operator-token
+StartLimitIntervalSec=60s
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=cgos-infer
+Group=cgos-infer
+StateDirectory=cgos-inference
+StateDirectoryMode=0700
+WorkingDirectory=/var/lib/cgos-inference
+Environment=PYTHONPATH=/opt/cgos/runtime
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONUNBUFFERED=1
+Environment=COMMUNITY_GRID_ENABLE_WORKER=1
+Environment=COMMUNITY_GRID_PORT=8767
+Environment=COMMUNITY_GRID_STATE=/var/lib/cgos-inference/jobs.sqlite3
+Environment=COMMUNITY_GRID_OPERATOR_TOKEN_FILE=/var/lib/cgos-inference/operator-token
+EnvironmentFile=/etc/cgos/inference/worker.env
+ExecStart=/usr/bin/python3 -m community_grid.server
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=20s
+KillMode=control-group
+UMask=0077
+NoNewPrivileges=yes
+ProtectHome=yes
+ProtectSystem=strict
+PrivateTmp=yes
+PrivateDevices=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/var/lib/cgos-inference
+MemoryMax=6G
+CPUQuota=400%
+TasksMax=64
+LimitNOFILE=256
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,6 @@
+#!/bin/sh
+set -eu
+test "$(id -un)" = cgos-infer
+test -z "${SSH_ORIGINAL_COMMAND:-}"
+export PYTHONPATH=/opt/cgos/runtime PYTHONDONTWRITEBYTECODE=1
+exec /usr/bin/python3 -m community_grid.grid_relay 8767 /var/lib/cgos-inference/operator-token

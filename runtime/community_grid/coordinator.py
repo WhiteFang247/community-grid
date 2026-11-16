@@ -162,28 +162,40 @@ def local_transport(port, token):
     return lambda method, path, body=None: request(port, token, method, path, body)
 
 
-def ssh_transport(address, user, identity_file, known_hosts, staging, port):
+def ssh_transport(address, user, identity_file, known_hosts, staging=None, port=None,
+                  *, forced_command=False, ssh_port=22, bind_address=None):
     """Build a fixed noninteractive SSH command from operator configuration."""
     address = str(ipaddress.IPv4Address(address))
-    if not re.fullmatch(r"[a-z_][a-z0-9_-]*", user) or not re.fullmatch(r"/dev/shm/[a-zA-Z0-9_.-]+", staging):
-        raise ValueError("Invalid worker account or live RAM directory")
-    if not isinstance(port, int) or not 1 <= port <= 65535:
-        raise ValueError("Invalid worker loopback port")
+    if not re.fullmatch(r"[a-z_][a-z0-9_-]*", user):
+        raise ValueError("Invalid worker account")
+    if not isinstance(ssh_port, int) or not 1 <= ssh_port <= 65535:
+        raise ValueError("Invalid SSH port")
+    if bind_address is not None:
+        bind_address = str(ipaddress.IPv4Address(bind_address))
+    if not forced_command:
+        if not isinstance(staging, str) or not re.fullmatch(r"/dev/shm/[a-zA-Z0-9_.-]+", staging):
+            raise ValueError("Invalid live RAM directory")
+        if not isinstance(port, int) or not 1 <= port <= 65535:
+            raise ValueError("Invalid worker loopback port")
+    elif staging is not None or port is not None:
+        raise ValueError("Forced-command transport cannot select a remote program or port")
     pin = Path(known_hosts).expanduser().resolve(strict=True).as_posix()
     identity = str(Path(identity_file).expanduser().resolve(strict=True))
     null = os.devnull
-    argv = ["ssh", "-F", null, "-T", "-i", identity, "-o", "IdentitiesOnly=yes",
+    argv = ["ssh", "-F", null, "-T", "-p", str(ssh_port), "-i", identity,
+            *(["-b", bind_address] if bind_address else []), "-o", "IdentitiesOnly=yes",
             "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "UpdateHostKeys=no",
             "-o", "ClearAllForwardings=yes", "-o", "ConnectTimeout=4",
             "-o", f'UserKnownHostsFile="{pin}"', "-o", f"GlobalKnownHostsFile={null}",
             f"{user}@{address}"]
-    remote_command = (
+    remote_command = None if forced_command else (
         f"PYTHONPATH={shlex.quote(staging + '/runtime')} python3 -B -m community_grid.grid_relay "
         f"{port} {shlex.quote(staging + '/operator-token')}"
     )
     def send(method, path, body=None):
         return json.loads(subprocess.run(
-            [*argv, remote_command], input=json.dumps({"method": method, "path": path, "body": body}),
+            [*argv, *([remote_command] if remote_command else [])],
+            input=json.dumps({"method": method, "path": path, "body": body}),
             text=True, capture_output=True, timeout=10, check=True,
         ).stdout)
     return send
