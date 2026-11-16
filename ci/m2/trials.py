@@ -2,6 +2,8 @@
 import hashlib
 import json
 from pathlib import Path
+from contextlib import closing
+import sqlite3
 import statistics
 import subprocess
 import sys
@@ -75,9 +77,29 @@ def ordinary(mode, identity):
         if state in ("failed", "blocked", "cancelled", "timed-out"):
             raise RuntimeError(state)
         return state == "completed"
-    spin(ready, 60)
-    elapsed = time.monotonic() - t0
-    return dict(seconds=elapsed, **verified(command, identity, mode != "local"))
+    db = (Path("/var/lib/cgos/graphs.db") if mode == "local" else
+          Path("/var/lib/cgos-coordinator/distributed-graphs.db"))
+    try:
+        spin(ready, 60)
+        elapsed = time.monotonic() - t0
+        return dict(seconds=elapsed, **verified(command, identity, mode != "local"))
+    finally:
+        snapshot(db, identity)
+
+
+def snapshot(path, identity):
+    with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as db:
+        row = db.execute("SELECT state FROM graphs WHERE id=?", (identity,)).fetchone()
+        if row is None:
+            return
+        state = json.loads(row[0])
+        units = {name: {key: val for key, val in unit.items() if key != "input"}
+                 for name, unit in state["units"].items()}
+        quarantine = []
+        if db.execute("SELECT 1 FROM sqlite_master WHERE name='lease_quarantine'").fetchone():
+            quarantine = [json.loads(r[0]) for r in db.execute("SELECT lease FROM lease_quarantine")]
+    report("M2_STATE", {"graph": identity, "deadline": state["deadline"], "units": units,
+                        "quarantine": quarantine})
 
 
 class Barrier:
@@ -108,11 +130,18 @@ class Barrier:
                 self.target, self.outcome = lease, request
                 self.trigger.set()
                 raise ConnectionError("delayed before admission")
+            metric = {"node": node, "action": action, "started": started,
+                      **{key: lease[key] for key in ("graph", "task", "attempt", "generation") if lease}}
             try:
                 reply = wire(request)
+                metric["status"] = reply.get("status")
+            except Exception as exc:
+                metric["error_type"] = type(exc).__name__
+                raise
             finally:
-                self.metrics.append({"node": node, "action": action,
-                                     "seconds": time.monotonic() - started})
+                metric["seconds"] = time.monotonic() - started
+                self.metrics.append(metric)
+                report("M2_FAULT_RPC", metric)
             if hit:
                 assert reply["status"] in ("queued", "running", "completed")
                 self.target = lease
@@ -219,6 +248,8 @@ def fault(mode, number, folder, identity, stage_only=False):
                     **verified(rt.request, identity, True)}
     finally:
         registry.close()
+        if (folder / "distributed-graphs.db").exists():
+            snapshot(folder / "distributed-graphs.db", identity)
 
 
 def quarantined(runtime, lease=None):

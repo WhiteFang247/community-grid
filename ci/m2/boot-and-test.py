@@ -36,7 +36,7 @@ def key(path):
     return " ".join(public.read_text().split()[:2]), fingerprint
 
 
-def make_media(directory, diagnostic=False):
+def make_media(directory, diagnostic=False, acceptance=False):
     client = directory / "client"
     public, _ = key(client)
     key(directory / "unknown")
@@ -64,6 +64,8 @@ def make_media(directory, diagnostic=False):
             shutil.copyfile(ROOT / "trials.py", folder / "trials.py")
             if diagnostic:
                 shutil.copyfile(ROOT / "diagnose-latency.py", folder / "diagnose.py")
+            if acceptance:
+                shutil.copyfile(ROOT / "acceptance-observer.py", folder / "observe.py")
             (folder / "nodes.json").write_text(json.dumps(dict(version=1, workers=entries)))
             for name, field in (("known_hosts", None), ("wrong_hosts", bad)):
                 (folder / name).write_text("".join(
@@ -261,14 +263,17 @@ class Guest:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--diagnostic", action="store_true")
-    diagnostic = parser.parse_args().diagnostic
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--diagnostic", action="store_true")
+    modes.add_argument("--acceptance", action="store_true")
+    options = parser.parse_args()
+    diagnostic, acceptance = options.diagnostic, options.acceptance
     EVIDENCE.mkdir(exist_ok=True)
     kernel, = [p.name.removeprefix("config-") for p in Path("iso/manifest").glob("config-*")]
     accel = qemu_accel()
     with tempfile.TemporaryDirectory(prefix="cgos-m2-") as path, ExitStack() as stack:
         directory = Path(path)
-        disks = make_media(directory, diagnostic)
+        disks = make_media(directory, diagnostic, acceptance)
         with closing(socket.socket()) as sock:
             sock.bind(("127.0.0.1", 0))
             port = sock.getsockname()[1]
@@ -282,18 +287,31 @@ def main():
             if ids[0] == ids[1]:
                 raise RuntimeError("Guest boot IDs are not independent")
             a.run("/bin/bash /run/cgos-test-private/media/auth.sh", 125)
+            if acceptance:
+                a.run("install -m 0644 /run/cgos-test-private/media/observe.py /run/cgos-acceptance-observe.py && "
+                      "install -d /run/systemd/system/cgos-coordinator.service.d && "
+                      "printf '%s\\n' '[Service]' 'ExecStart=' "
+                      "'ExecStart=/usr/bin/python3 /run/cgos-acceptance-observe.py --socket /run/cgos-coordinator/api.sock serve --state /var/lib/cgos-coordinator --enrollment /etc/cgos/distributed/nodes.json' "
+                      ">/run/systemd/system/cgos-coordinator.service.d/acceptance.conf && "
+                      "systemctl daemon-reload && systemctl restart cgos-coordinator.service && "
+                      "timeout 25s sh -c 'until test -S /run/cgos-coordinator/api.sock; do sleep .2; done'", 45)
             if diagnostic:
                 a.run("systemctl stop cgos-coordinator.service && "
                       "PYTHONPATH=/opt/cgos/runtime timeout 70s python3 -Bu /run/cgos-test-private/media/diagnose.py", 80)
             else:
-                a.run("PYTHONPATH=/opt/cgos/runtime python3 -B /run/cgos-test-private/media/trials.py", 1250,
+                a.run("PYTHONPATH=/opt/cgos/runtime python3 -B /run/cgos-test-private/media/trials.py", 10500 if acceptance else 1250,
                       lambda action: b.qmp("set_link", {"name": "nic", "up": action == b"UP"}))
                 for guest in (a, b):
                     guest.run("python3 -B /run/cgos-test-private/media/audit.py && "
                               "systemctl show cgos-worker.service -p MemoryPeak -p CPUUsageNSec", 45)
         finally:
             for guest in (a,b):
-                if diagnostic:
+                if acceptance and guest is a:
+                    try:
+                        guest.run("cat /var/lib/cgos-coordinator/acceptance-rpc.jsonl", 90)
+                    except (OSError, RuntimeError):
+                        pass
+                if diagnostic or acceptance:
                     try:
                         guest.run("python3 -B /run/cgos-test-private/media/audit.py; "
                                   "systemctl show cgos-worker.service cgos-worker-relay.service "
